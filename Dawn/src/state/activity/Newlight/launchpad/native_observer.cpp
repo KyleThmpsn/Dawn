@@ -22,14 +22,18 @@ coo::Generation observedOwner{};
 std::array<std::uintptr_t,kObjects.size()> sources{};
 coo::Generation shutterOwner{};
 shutter::Physical physicalShutter{};
+std::array<shutter::Physical,8> shutterCandidates{};
 std::uintptr_t shutterGate{};
 template<class T> T at(const std::byte* bytes) noexcept {T v{};std::memcpy(&v,bytes,sizeof v);return v;}
 std::uintptr_t image() noexcept {return reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));}
 void poll_shutter(const Request& req) noexcept {
     if(!req.owner.valid() || req.frame.cinematic.ending()) {return;}
-    shutter::Physical physical{};std::uintptr_t source{};
-    {const std::lock_guard lock(mutex);if(shutterOwner!=req.owner) {return;}physical=physicalShutter;source=shutterGate;}
-    if(!source || !physical.address || native_owner()!=req.owner) {return;}
+    shutter::Physical anchor{},physical{};std::array<shutter::Physical,8> candidates{};std::uintptr_t source{};
+    {const std::lock_guard lock(mutex);if(shutterOwner!=req.owner) {return;}
+        anchor=physicalShutter;candidates=shutterCandidates;source=shutterGate;}
+    if(!source || !anchor.address || native_owner()!=req.owner) {return;}
+    gn::Read selection{image()};
+    if(!shutter::next(selection,source,anchor,candidates,physical)) {return;}
     struct Exchange {
         std::uint64_t compare_exchange(std::uintptr_t address,std::uint64_t expected,std::uint64_t desired) noexcept {
             return static_cast<std::uint64_t>(InterlockedCompareExchange64(reinterpret_cast<volatile LONG64*>(address),
@@ -51,26 +55,26 @@ void poll_shutter(const Request& req) noexcept {
     }
 }
 }
-bool native_shutter_present(coo::Generation owner) noexcept {
-    shutter::Physical physical{};
-    {const std::lock_guard lock(mutex);if(shutterOwner!=owner) {return false;}physical=physicalShutter;}
-    gn::Read read{image()};std::uintptr_t row{};
-    return owner.valid() && shutter::identity(read,physical,row);
-}
-void observe_native_shutter(coo::Generation owner,std::uint32_t entity) noexcept {
+void observe_native_shutter(coo::Generation owner,std::uint32_t entity,bool placedAtDoor) noexcept {
     if(!owner.valid() || native_owner()!=owner) {return;}
     gn::Read read{image()};shutter::Physical physical{};
     if(!shutter::capture(read,entity,physical)) {return;}
     const std::lock_guard lock(mutex);
-    if(shutterOwner!=owner) {shutterOwner=owner;shutterGate=0;}
-    physicalShutter=physical;
+    if(shutterOwner!=owner) {shutterOwner=owner;shutterGate=0;physicalShutter={};shutterCandidates={};}
+    if(placedAtDoor) {physicalShutter=physical;}
+    for(auto& candidate:shutterCandidates) {
+        gn::Read current{image()};std::uintptr_t row{};
+        if(candidate.entity==physical.entity || !shutter::identity(current,candidate,row)) {
+            candidate=physical;return;
+        }
+    }
 }
 void observe_native_shutter_gate(void* raw) noexcept {
     const auto source=reinterpret_cast<std::uintptr_t>(raw);gn::Read read{image()};
     if(!shutter::gate(read,source)) {return;}
     const auto owner=native_owner();if(!owner.valid()) {return;}
     const std::lock_guard lock(mutex);
-    if(shutterOwner!=owner) {shutterOwner=owner;physicalShutter={};}
+    if(shutterOwner!=owner) {shutterOwner=owner;physicalShutter={};shutterCandidates={};}
     shutterGate=source;
 }
 void observe_native_object(void* raw) noexcept {

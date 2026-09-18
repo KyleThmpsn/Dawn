@@ -34,8 +34,7 @@ bool observe_granted(const GrantRequest&,std::uint64_t) noexcept;
 // Holds the accepted pickup binding across inventory commit; stale runs cannot consume a grant.
 bool commit_grant(const GrantRequest&,std::uint64_t,bool,void*,bool(*)(void*) noexcept) noexcept;
 void observe_native_object(void*) noexcept;
-bool native_shutter_present(coo::Generation) noexcept;
-void observe_native_shutter(coo::Generation,std::uint32_t) noexcept;
+void observe_native_shutter(coo::Generation,std::uint32_t,bool placedAtDoor) noexcept;
 void observe_native_shutter_gate(void*) noexcept;
 void poll_native_objects() noexcept;
 void finish_handoff(coo::Generation) noexcept;

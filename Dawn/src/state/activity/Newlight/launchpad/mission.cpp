@@ -36,8 +36,8 @@ Mission::Mission() noexcept {
     exterior.add("the Breach",b,{control(Mechanic::next)});
 
     auto& lights=phases[1];lights.name("New Light / find a weapon");
-    // The placed gate (object 2, device 75) owns the lift. Keep the separate
-    // doors overlay inactive so it cannot add a second surface across it.
+    // Device 75 drives both overlapping world shutters. Retain its authored
+    // logical source, but keep the separate doors overlay inactive.
     a=lights.add("Breach preparation",0,{objective(2),speech(6),object(kBreach,2),object(kBreach,3,false),device(kBreach,75,0.F)});
     lights.add("Breach details",a,{object(kBreach,1),object(kBreach,7),object(kBreach,8),object(kBreach,9)});
     b=lights.add("Fallen above",a,{visit(kBreachRoute,31)});

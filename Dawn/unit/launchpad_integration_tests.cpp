@@ -209,6 +209,20 @@ int main(int argc,char** argv) {
         verify_bodies(controller->frame());
     }
 
+    // Entering the Breach retains the logical gate while the physical shutters
+    // remain closed until Ghost finishes. The optional overlay stays retired.
+    CHECK(controller->region(owner,0));
+    for(std::uint64_t now=131155;now<=131530;now+=125) {CHECK(controller->advance(71,now,true));}
+    CHECK(controller->frame().section==1 && !controller->frame().fault);
+    const auto& logical=controller->frame().native[lp::asset_index(lp::asset(lp::kBreach,4,2))];
+    CHECK(logical.managed && logical.desired);
+    const auto& overlay=controller->frame().native[lp::asset_index(lp::asset(lp::kBreach,4,3))];
+    CHECK(overlay.managed && !overlay.desired && !overlay.active);
+    const auto& shutter=controller->frame().native[lp::asset_index(lp::asset(lp::kBreach,23,75))];
+    CHECK(shutter.managed && shutter.active && shutter.position==0.F);
+    CHECK(!controller->frame().pickups[0].armed);
+    verify_bodies(controller->frame());
+
     // Native quest flags must start New Light and later release the forced start.
     // Existing vendor overrides and another Guardian's state must survive projection.
     dawn::state::CharacterState guardian{};

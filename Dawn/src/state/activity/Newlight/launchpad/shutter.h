@@ -4,8 +4,8 @@
 
 namespace dawn::state::activity::newlight::launchpad::shutter {
 
-// Both overlapping physical shutters use this entity resource. Retain one and
-// bind the mission's position channel to its animated 80F3D672 device.
+// Both overlapping physical shutters use this entity resource. Each must
+// consume the mission's position channel through its animated 80F3D672 device.
 inline constexpr std::uint32_t kEntity = 0x80C44F2BU;
 
 [[nodiscard]] constexpr bool matches(bool selected, std::uint32_t definition,

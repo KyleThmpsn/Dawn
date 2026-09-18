@@ -166,6 +166,7 @@ enum class HookSlot : std::size_t {
 constexpr std::size_t kHookCount = static_cast<std::size_t>(HookSlot::count);
 
 std::array<hooking::detour::Handle, kHookCount> g_handles{};
+std::atomic_bool g_omegaProbeActive{};
 std::atomic<SpawnerDeficit> g_spawnerDeficitOriginal{nullptr};
 std::atomic<SceneActorScheduler> g_sceneActorSchedulerOriginal{nullptr};
 std::atomic<EntityFactory> g_entityFactoryOriginal{nullptr};
@@ -562,6 +563,7 @@ std::int32_t* entity_factory_body(
     const std::uint32_t definition = safe_read<std::uint32_t>(descriptor, kInvalidHandle);
     namespace launchpad = state::activity::newlight::launchpad;
     state::activity::coo::Generation shutterOwner{};
+    bool shutterAtDoor{};
     if (call.accepts_side_effects() && result != nullptr
         && definition == launchpad::shutter::kEntity) {
         // Selection exists before initial world streaming. native_run() would
@@ -571,22 +573,25 @@ std::int32_t* entity_factory_body(
         const float y = safe_read<float>(descriptor + 0x24U);
         const float z = safe_read<float>(descriptor + 0x28U);
         const bool matches = launchpad::shutter::matches(owner.valid(), definition, x, y, z);
-        const bool suppress = matches && launchpad::native_shutter_present(owner);
-        if (matches && !suppress) {shutterOwner=owner;}
+        shutterOwner=owner;shutterAtDoor=matches;
         static std::atomic_uint32_t attempts{};
         const auto attempt = attempts.fetch_add(1U, std::memory_order_relaxed) + 1U;
         if (attempt <= 16U || (attempt & (attempt - 1U)) == 0U) {
             report("ev=launchpad stage=breach_shutter_factory attempt=%u run=%llu "
                    "definition=%08X table=%08X record=%d pos=%.3f,%.3f,%.3f action=%s",
                    attempt, static_cast<unsigned long long>(owner.run), definition, table,
-                   record, x, y, z, suppress ? "suppress" : "native");
+                   record, x, y, z, "native");
         }
-        if (suppress) {
-            // Keep the existing authenticated animated grate; reject only the
-            // duplicate before constructing render or physics components.
-            *result = -1;
-            return result;
+    }
+    // Release defaults must observe shutters without enabling the unrelated
+    // Omega diagnostics and presentation experiments that share this factory.
+    if (!g_omegaProbeActive.load(std::memory_order_acquire)) {
+        std::int32_t* const returned = original(result, descriptor, table, record);
+        if (shutterOwner.valid()) {
+            launchpad::observe_native_shutter(shutterOwner,
+                safe_read<std::uint32_t>(returned,kInvalidHandle),shutterAtDoor);
         }
+        return returned;
     }
     // Forest generator lane: log any construction of the six 808099D6 worker containers or
     // their placed platform entities (all class 80809C0F), regardless of the Ikora filter.
@@ -662,7 +667,7 @@ std::int32_t* entity_factory_body(
     }
     std::int32_t* const returned = original(result, descriptor, table, record);
     if(shutterOwner.valid()) {
-        launchpad::observe_native_shutter(shutterOwner,safe_read<std::uint32_t>(returned,kInvalidHandle));
+        launchpad::observe_native_shutter(shutterOwner,safe_read<std::uint32_t>(returned,kInvalidHandle),shutterAtDoor);
     }
     g_ikoraFactoryActive = previousFactoryActive;
     g_ikoraFactoryScene = previousFactoryScene;
@@ -905,10 +910,14 @@ __declspec(noinline) void __fastcall component_start(const std::uintptr_t* entry
 } // namespace
 
 bool install_omega_ikora_origin_probe() noexcept {
-    if (g_handles[0].attached) {
+    constexpr auto factorySlot = static_cast<std::size_t>(HookSlot::entityFactory);
+    if (g_handles[factorySlot].attached) {
         return g_callGate.accepting();
     }
     g_callGate.quiesce();
+    const auto& omega = core::settings::get().omegaExperiments;
+    const bool omegaProbe = omega.ikoraCarrierModelSuppression || omega.ikoraVfxRebind
+                            || omega.unsafeDiagnostics;
 
     auto* const image = reinterpret_cast<std::byte*>(GetModuleHandleW(nullptr));
     if (image == nullptr) {
@@ -926,13 +935,13 @@ bool install_omega_ikora_origin_probe() noexcept {
         image + kSelectorChildCreateRva,
         image + kSelectorObjectResolveRva,
     };
-    const bool spawnerPrefix = prefix_matches(targets[0], kSpawnerDeficitPrefix);
-    const bool scenePrefix = prefix_matches(targets[1], kSceneActorSchedulerPrefix);
+    const bool spawnerPrefix = !omegaProbe || prefix_matches(targets[0], kSpawnerDeficitPrefix);
+    const bool scenePrefix = !omegaProbe || prefix_matches(targets[1], kSceneActorSchedulerPrefix);
     const bool factoryPrefix = prefix_matches(targets[2], kEntityFactoryPrefix);
-    const bool componentPrefix = prefix_matches(targets[3], kComponentStartPrefix);
-    const bool effectPrefix = prefix_matches(targets[4], kEffectTransformComposePrefix);
-    const bool childPrefix = prefix_matches(targets[5], kSelectorChildCreatePrefix);
-    const bool resolvePrefix = prefix_matches(targets[6], kSelectorObjectResolvePrefix);
+    const bool componentPrefix = !omegaProbe || prefix_matches(targets[3], kComponentStartPrefix);
+    const bool effectPrefix = !omegaProbe || prefix_matches(targets[4], kEffectTransformComposePrefix);
+    const bool childPrefix = !omegaProbe || prefix_matches(targets[5], kSelectorChildCreatePrefix);
+    const bool resolvePrefix = !omegaProbe || prefix_matches(targets[6], kSelectorObjectResolvePrefix);
     if (!spawnerPrefix || !scenePrefix || !factoryPrefix || !componentPrefix || !effectPrefix
         || !childPrefix || !resolvePrefix) {
         report("ev=omega_ikora_origin stage=install result=prefix_mismatch "
@@ -965,7 +974,10 @@ bool install_omega_ikora_origin_probe() noexcept {
         {targets[5], reinterpret_cast<void*>(&selector_child_create)},
         {targets[6], reinterpret_cast<void*>(&selector_object_resolve)},
     }};
-    if (!hooking::detour::install(std::span(specs), std::span(g_handles))) {
+    const auto firstHook = omegaProbe ? std::size_t{0} : factorySlot;
+    const auto hookCount = omegaProbe ? kHookCount : std::size_t{1};
+    if (!hooking::detour::install(std::span(specs).subspan(firstHook,hookCount),
+                                std::span(g_handles).subspan(firstHook,hookCount))) {
         report("ev=omega_ikora_origin stage=install result=attach_fail "
                "transaction=atomic mutation=observe_plus_narrow_model_suppression");
         return false;
@@ -993,7 +1005,10 @@ bool install_omega_ikora_origin_probe() noexcept {
     hooking::publish_original(
         g_selectorObjectResolveOriginal,
         reinterpret_cast<SelectorObjectResolve>(g_handles[6].original));
+    g_omegaProbeActive.store(omegaProbe,std::memory_order_release);
     g_callGate.accept();
+    report("ev=launchpad stage=breach_shutter_observer result=installed hooks=%zu omega_probe=%u",
+           hookCount,omegaProbe ? 1U : 0U);
     report("ev=omega_ikora_origin stage=install result=ok transaction=atomic "
            "targets=+%llX,+%llX,+%llX,+%llX,+%llX,+%llX,+%llX filter=%08X "
            "scene2_model_suppression=%08X vfx_rebind=observe_actor_root_delta "
@@ -1016,7 +1031,8 @@ void quiesce_omega_ikora_origin_probe() noexcept {
 
 bool uninstall_omega_ikora_origin_probe() noexcept {
     quiesce_omega_ikora_origin_probe();
-    if (!g_handles[0].attached) {
+    constexpr auto factorySlot = static_cast<std::size_t>(HookSlot::entityFactory);
+    if (!g_handles[factorySlot].attached) {
         return true;
     }
 
@@ -1033,8 +1049,13 @@ bool uninstall_omega_ikora_origin_probe() noexcept {
         hooking::detour::ProtectedCodeEntry{
             reinterpret_cast<void*>(&hooking::call_gate_detail::leave)},
     };
+    // Retain the installed selection through quiescing and a deferred removal.
+    // Passing unattached optional handles would reject factory-only teardown.
+    const bool omegaProbe = g_omegaProbeActive.load(std::memory_order_acquire);
+    const auto firstHook = omegaProbe ? std::size_t{0} : factorySlot;
+    const auto hookCount = omegaProbe ? kHookCount : std::size_t{1};
     const hooking::detour::UninstallResult result = hooking::detour::uninstall(
-        std::span(g_handles), protectedEntries, &calls_idle);
+        std::span(g_handles).subspan(firstHook,hookCount), protectedEntries, &calls_idle);
     report("ev=omega_ikora_origin stage=uninstall result=%s active_calls=%u retained=%u "
            "transaction=atomic mutation=observe_plus_narrow_model_suppression",
            result == hooking::detour::UninstallResult::removed
@@ -1047,6 +1068,7 @@ bool uninstall_omega_ikora_origin_probe() noexcept {
         return false;
     }
 
+    g_omegaProbeActive.store(false,std::memory_order_release);
     g_effectTransformComposeOriginal.store(nullptr, std::memory_order_release);
     g_selectorChildCreateOriginal.store(nullptr, std::memory_order_release);
     g_selectorObjectResolveOriginal.store(nullptr, std::memory_order_release);

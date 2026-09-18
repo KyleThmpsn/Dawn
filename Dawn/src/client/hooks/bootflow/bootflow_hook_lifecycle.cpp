@@ -208,8 +208,6 @@ bool install() noexcept {
     g_freshInstallOwner = true;
 
     const auto& omega = core::settings::get().omegaExperiments;
-    const bool ikoraProbe = omega.ikoraCarrierModelSuppression || omega.ikoraVfxRebind
-                            || omega.unsafeDiagnostics;
     const bool sceneRetirementProbe = omega.unsafeDiagnostics;
     report_omega_experiment_manifest(omega);
 
@@ -236,8 +234,11 @@ bool install() noexcept {
                                                && install_activity_spawner_chain_probe();
     const bool activitySpawnerChain = !kEnableActivitySpawnerChainProbe
                                       || activitySpawnerChainInstalled;
-    const bool omegaIkoraOriginInstalled = ikoraProbe && install_omega_ikora_origin_probe();
-    const bool omegaIkoraOrigin = !ikoraProbe || omegaIkoraOriginInstalled;
+    // The shared entity factory also discovers New Light's physical shutters.
+    // Its production observer is required even when every Omega experiment is off.
+    // The owner itself keeps the additional Omega hooks behind their settings.
+    const bool omegaIkoraOriginInstalled = install_omega_ikora_origin_probe();
+    const bool omegaIkoraOrigin = omegaIkoraOriginInstalled;
     // The shared directive owner always observes Towerfall's class-specific content consumer.
     // Omega uses server-published native objectives; the client only verifies consumption.
     const bool omegaDirectivePresentationInstalled = install_omega_directive_presentation();

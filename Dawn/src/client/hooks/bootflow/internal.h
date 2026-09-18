@@ -243,13 +243,13 @@ void uninstall_activity_behavior_condition_probe() noexcept;
 /** Detaches the native AI-spawner request-chain observers. */
 void uninstall_activity_spawner_chain_probe() noexcept;
 
-/** Attaches the narrow Omega Ikora origin classifier and hides only Scene 80EC0FA8's models. */
+/** Always observes New Light's shutters; additional Omega hooks require their experiment settings. */
 [[nodiscard]] bool install_omega_ikora_origin_probe() noexcept;
 
-/** Detaches the Omega Ikora origin classifier and Scene 80EC0FA8 model treatment. */
+/** Detaches the shared factory and any installed optional Omega hooks. */
 [[nodiscard]] bool uninstall_omega_ikora_origin_probe() noexcept;
 
-/** Stops new Ikora observation/mutation work while native forwarding remains live. */
+/** Stops shared factory and optional Omega work while native forwarding remains live. */
 void quiesce_omega_ikora_origin_probe() noexcept;
 
 /** Installs Omega's post-arrival, native C252E306 New Objective presentation edge. */
