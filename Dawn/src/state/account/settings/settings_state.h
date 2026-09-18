@@ -54,7 +54,20 @@ struct Display {
     float calibrationPrimary{};
     /** Second unidentified renderer-calibration scalar. */
     float calibrationAlpha{};
+    bool motionBlur{};
+    bool filmGrain{};
+    bool chromaticAberration{};
     friend bool operator==(const Display&, const Display&) = default;
+};
+
+/** Native PC preferences. The seed version prevents a later sign-in from reimporting cvars. */
+struct PcPreferences {
+    std::int32_t seedVersion{};
+    bool voiceChatEnabled{};
+    std::int8_t verticalSyncMode{};
+    std::int32_t fieldOfViewAdjustment{};
+    bool useLocalKeyBindings{};
+    friend bool operator==(const PcPreferences&, const PcPreferences&) = default;
 };
 
 /** Authored HUD, subtitle, reticle, and text presentation preferences. */
@@ -101,6 +114,7 @@ struct AccountSettings {
     Interface interface;
     Social social;
     bindings::KeyBindings keyBindings;
+    PcPreferences pc;
     /** True only when a settings object was supplied by configuration. */
     bool configured{};
     friend bool operator==(const AccountSettings&, const AccountSettings&) = default;

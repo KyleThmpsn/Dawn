@@ -36,6 +36,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="spawn_hold_lifecycle_tests.cpp" />
+    <ClCompile Include="..\src\state\activity\activity_world_arrival.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

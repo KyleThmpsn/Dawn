@@ -42,8 +42,8 @@ void verify_packet(const lp::Frame& frame) {
     snapshot->hasRegion=true;snapshot->region=frame.bubble;snapshot->gameplayClockTicks=frame.gameplayClockTicks;
     snapshot->roster.playerKeyGroup=0x4786C0E0U;
     std::uint32_t failed{};
-    CHECK(roster::admit(definition,*storage,snapshot->roster,[](std::size_t i,layout::RosterGroup& group) {
-        for(const auto& expected:lp::kGroups) if(expected.hint==i) {roster::recovered(group,expected);return true;}
+    CHECK(roster::admit(definition,*storage,snapshot->roster,[](std::uint32_t key,std::uint32_t tag,layout::RosterGroup& group) {
+        for(const auto& expected:lp::kGroups) if(expected.key==key && expected.tag==tag) {roster::recovered(group,expected);return true;}
         return false;
     },failed));
     roster::movies(*storage,snapshot->roster,frame.cinematic);

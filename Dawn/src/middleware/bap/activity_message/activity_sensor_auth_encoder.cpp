@@ -5,6 +5,7 @@
 #include "../../../state/activity/coo/native_presentation_authority.h"
 #include "../../../state/activity/omega_intro_rules.h"
 #include "../../../state/activity/omega_portal_entry.h"
+#include "../../../state/activity/omega_ikora_lattice.h"
 #include "../../../state/activity/omega_crown_respawn_authority.h"
 #include "../../../state/activity/omega_enemy_crown_catalog.h"
 #include "../../../state/activity/omega_lair_full_roster_catalog.h"
@@ -15,6 +16,7 @@ namespace {
 
 namespace bits = encoding::bits;
 namespace portal = state::activity::omega_portal_entry;
+namespace lattice = state::activity::omega_ikora_lattice;
 namespace crown = state::activity::omega_crown_respawn;
 namespace music = state::activity::omega_music;
 
@@ -156,7 +158,9 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
             || snapshot.grant.token < kMinimumGrantToken)) {
         return false;
     }
-    if (snapshot.roster.groupCount > 15U
+    // This is host storage for global and bubble-local groups together. Group
+    // bodies are presence-terminated; Omega's complete loading roster has 16.
+    if (snapshot.roster.groupCount > kGroupCapacity
         || snapshot.roster.topLevelGroupCount > snapshot.roster.groupCount) {
         return false;
     }
@@ -324,6 +328,30 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
     return true;
 }
 
+/** Update one registered Lighthouse object without reopening native runtime authority. */
+[[nodiscard]] bool write_ikora_object(bits::Writer& writer, const Snapshot& snapshot,
+                                     std::uint8_t type, std::uint16_t index) noexcept {
+    const Group* selected{};
+    std::size_t selectedSlot{};
+    for (std::size_t group = 0; group < snapshot.roster.groupCount; ++group) {
+        const auto& row = snapshot.roster.groups[group];
+        for (std::size_t slot = 0; slot < row.slotTypes.size(); ++slot) {
+            if (row.key != kOmegaOpeningRegistry || row.slotTypes[slot] != type
+                || row.slotIndices[slot] != index) continue;
+            if (selected != nullptr) return false;
+            selected = &row;
+            selectedSlot = slot;
+        }
+    }
+    // A direct Forest/Lair roster may omit the Lighthouse group entirely.
+    if (selected == nullptr) return true;
+    return writer.write(1, kPresenceWidth) && writer.write(selected->key, kKeyWidth)
+        && writer.write(0, kKeyWidth)
+        && write_object_block(writer, snapshot, selected->key, type, index,
+            static_cast<std::uint8_t>(selected->slotFlags[selectedSlot] | kSlotAuthFlag), false)
+        && writer.write(0, kPresenceWidth);
+}
+
 /** Publish only the two authored restriction records at Crown arrival. Opening
  * the general authority pass again would overwrite native script/participation
  * state. Validate both slots before writing either, and order lifetime first. */
@@ -395,7 +423,8 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
 }
 
 [[nodiscard]] bool write_phase_two(bits::Writer& writer, const Snapshot& snapshot,
-                                   bool& portalWritten, bool& musicWritten) noexcept {
+                                   bool& portalWritten, bool& musicWritten, bool& latticeWritten,
+                                   bool& sceneWritten) noexcept {
     if (snapshot.omegaOpeningStage == kOmegaOpeningStageScene
         || snapshot.omegaOpeningStage == kOmegaOpeningStageReady) {
         // The authored source must publish before the Scene that requests it. The Ghost group
@@ -477,6 +506,7 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
                                              flags,
                                              false);
                 sceneObjects += selectedScene ? 1U : 0U;
+                sceneWritten = sceneWritten || (selectedScene && (flags & kSlotAuthFlag) != 0);
                 dialogueObjects += selectedDialogue ? 1U : 0U;
                 musicObjects += selectedMusic ? 1U : 0U;
                 musicWritten = musicWritten || selectedMusic;
@@ -555,6 +585,8 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
                 ++selectedInGroup;
                 ++selectedObjects;
                 portalWritten = portalWritten || selectedTeleport;
+                latticeWritten = latticeWritten || (selectedMissionGate
+                    && (row.slotFlags[slot] & kSlotAuthFlag) != 0);
             }
             const std::size_t expectedInGroup = runtimeGroup     ? 2U
                                                 : teleportGroup ? 2U
@@ -653,12 +685,14 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
                                          row.key,
                                          slotType,
                                          row.slotIndices[slot],
-                                         publishes_music(snapshot)
-                                             && music::is_sensor(row.key, slotType, row.slotIndices[slot])
-                                             ? static_cast<std::uint8_t>(row.slotFlags[slot] | kSlotAuthFlag)
-                                             : row.slotFlags[slot],
+                                         slotFlags,
                                          carriesPlayerKey);
             portalWritten = portalWritten || portal::is_carrier(row.key,slotType,row.slotIndices[slot]);
+            latticeWritten = latticeWritten || ((row.slotFlags[slot] & kSlotAuthFlag) != 0
+                && lattice::is_gate({row.key, slotType, row.slotIndices[slot]}));
+            sceneWritten = sceneWritten || ((row.slotFlags[slot] & kSlotAuthFlag) != 0
+                && row.key == kOmegaOpeningRegistry && slotType == kOmegaSceneSlotType
+                && row.slotIndices[slot] == kOmegaSceneSlotIndex);
             musicWritten = musicWritten || (publishes_music(snapshot)
                 && music::is_sensor(row.key, slotType, row.slotIndices[slot]));
         }
@@ -700,9 +734,15 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
     if (encoded && !snapshot.phaseOneOnly) {
         bool portalWritten = false;
         bool musicWritten = false;
+        bool latticeWritten = false;
+        bool sceneWritten = false;
         if(snapshot.omegaEndingSeedRuntime && snapshot.omegaSceneAuthority
             && snapshot.omegaEndingState==1) {
-            // Replace phase two rather than append another copy of the runtime group.
+            // Return travel rebuilds the sync pool even when the mission's
+            // components retain their authority. Native 4D6530 blocks every
+            // pending command until all root records have been initialized.
+            // This writer sends empty initialization envelopes for script and
+            // participation; it never republishes their retained values.
             encoded=write_ending_runtime_seed(writer,snapshot)
                 && write_dialogue_group(writer,snapshot,musicWritten);
         } else if(crown::publishes(snapshot.omegaSceneAuthority,
@@ -711,14 +751,29 @@ constexpr std::uint32_t kMaximumRegion = 0x7FFFFFFF;
                 && write_dialogue_group(writer,snapshot,musicWritten);
         } else if (!snapshot.preserveMissionAuthorityState
             || snapshot.omegaOpeningStage != kOmegaOpeningStageNone) {
-            encoded = write_phase_two(writer, snapshot, portalWritten, musicWritten);
+            encoded = write_phase_two(writer, snapshot, portalWritten, musicWritten, latticeWritten, sceneWritten);
         } else {
             // The forest generator group is exempt from the suppression: its blocks are empty
             // ({reset=1, present=0}, no authority applied, nothing clobbered) and they are the
             // only way its bubble-11 sync objects ever SEED — without them
             // ClientRosterSync_AllRecordsInBubbleSeeded vetoes the bubble's seed commit and
             // the replicated map-generator worker never instantiates.
-            encoded = write_forest_generator_group(writer, snapshot);
+            // Dialogue and objectives are host-owned too. Suppressing them here
+            // delayed Ghost's arrival line until the scene bootstrap and left
+            // the HUD on its opening objective after the native entrance edge.
+            encoded = write_forest_generator_group(writer, snapshot)
+                && write_dialogue_group(writer, snapshot, musicWritten);
+        }
+        // Arrival created the actor and scene. A later approach changes only
+        // the scene's retained event list; keep its generation and source fixed.
+        if (encoded && snapshot.omegaSceneAuthority && snapshot.omegaIkoraPortalRequested && !sceneWritten) {
+            encoded = write_ikora_object(writer, snapshot, kOmegaSceneSlotType, kOmegaSceneSlotIndex);
+        }
+        // Like the contact carrier, the gate remains host-owned after native
+        // mission initialization. Publish its retained release through every
+        // filtered path, without resending script, participation or scene bodies.
+        if (encoded && snapshot.omegaSceneAuthority && snapshot.omegaIkoraLatticeReleased && !latticeWritten) {
+            encoded = write_ikora_object(writer, snapshot, lattice::kGateType, lattice::kGateIndex);
         }
         // A later carrier activation must never reopen participation publication. In stages
         // that already wrote this exact slot, retain that single body instead of duplicating it.

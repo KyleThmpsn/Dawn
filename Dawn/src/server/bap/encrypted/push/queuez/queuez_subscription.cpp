@@ -184,7 +184,7 @@ void append_queuez_notification(Scratch& scratch,
         }
         stagedAfter.pendingBannerRoot = 0;
         if (!queuez::stage_family0_subscription(
-                before, selected, publish, incremental, stagedAfter)) {
+                before, subscription.familyRootSoid, selected, publish, incremental, stagedAfter)) {
             queuez_report::subscription_state("stage_family0");
             stagedAfter = before;
             stagedAfter.pendingBannerRoot = 0;

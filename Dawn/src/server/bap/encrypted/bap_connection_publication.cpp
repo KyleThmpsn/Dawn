@@ -219,6 +219,24 @@ bool publish_connection_fields(Session& session,
 /** Arms the owed Family-4 and banner re-pushes when the queuez publication asks for them. */
 void arm_repushes(Session& session, const queuez::StagedPublication& queuezPublication) noexcept {
     const std::uint64_t now = GetTickCount64();
+    if (queuezPublication.hasState) {
+        if (queuezPublication.cancelFamily4RepushRoot != 0
+            && queuezPublication.cancelFamily4RepushRoot == session.family4RepushRoot) {
+            session.family4RepushArmed = false;
+            session.family4RepushRoot = 0;
+            session.family4RepushDueTick = 0;
+        }
+        if (queuezPublication.cancelBannerRepushRoot != 0
+            && queuezPublication.cancelBannerRepushRoot == session.bannerRepushRoot) {
+            session.bannerRepushArmed = false;
+            session.bannerRepushRoot = 0;
+            session.bannerRepushDueTick = 0;
+        }
+        if (queuezPublication.releasedFamily4) {
+            session.accountResyncArmed = false;
+            session.accountResyncGeneration = 0;
+        }
+    }
     if (queuezPublication.armsFamily4Repush && queuezPublication.family4RepushRoot != 0) {
         session.family4RepushDueTick = now + kFamily4RepushDelayMs;
         session.family4RepushRoot = queuezPublication.family4RepushRoot;

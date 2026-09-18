@@ -177,7 +177,8 @@ void note_omega_forest_arrival_pending() noexcept;
 [[nodiscard]] bool tower_watch_opening_dialogue_processed() noexcept;
 
 /**
- * Latches that the client's type-18 post-apply observer resolved the mission-state storage.
+ * Latches that a native observer resolved the constructed mission-state storage.
+ * Omega's active arrival owner requires both type 18 and type 35 in the loaded world.
  * This proves authority materialization only; it does not prove a mission executor is running.
  * @return True only for the first acknowledgement in the current activity instance.
  */

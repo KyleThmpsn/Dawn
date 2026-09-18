@@ -76,6 +76,28 @@ struct TowerfallReadiness final {
            && input.localReady && input.scriptRuntime && input.directorRuntime;
 }
 
+/** Native storage witnesses for Omega; this does not assert that its scene has started. */
+struct OmegaRuntimeReadiness final {
+    bool selected{};
+    Phase phase{Phase::idle};
+    bool playerReady{}, worldReadable{};
+    std::int32_t worldState{-1};
+    bool localReady{}, scriptFound{}, directorFound{};
+    std::uint32_t scriptDatum{UINT32_MAX}, directorDatum{UINT32_MAX};
+    std::uint32_t scriptComponent{}, directorComponent{};
+    std::uint64_t scriptOffset{}, directorOffset{};
+};
+
+/** The active spawn/frame owner observes constructed slots after native arrival. */
+[[nodiscard]] constexpr bool omega_runtime_ready(const OmegaRuntimeReadiness& input) noexcept {
+    return input.selected && input.phase == Phase::arrived && input.playerReady
+        && input.worldReadable && input.worldState == 3 && input.localReady
+        && input.scriptFound && input.directorFound
+        && input.scriptDatum != UINT32_MAX && input.directorDatum != UINT32_MAX
+        && input.scriptComponent == 0x80809917U && input.directorComponent == 0x808099BDU
+        && input.scriptOffset == 0 && input.directorOffset == 0;
+}
+
 /** Evidence for completing a pending arrival after the native player already spawned. */
 struct FrameArrival final {
     Phase phase{Phase::idle};

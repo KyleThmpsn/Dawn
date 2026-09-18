@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cmath>
 
 namespace dawn::state::account::settings {
 namespace {
@@ -35,10 +36,6 @@ constexpr Range<std::int8_t> kAudioVolume{0, 10};
 
 /** Brightness stores the 7 menu choices, 0 to 6. */
 constexpr Range<std::int8_t> kBrightness{0, 6};
-/** The first unidentified calibration field uses the working renderer fallback. */
-constexpr float kCalibrationPrimary = 10000.0F;
-/** The second unidentified calibration field uses the working renderer alpha. */
-constexpr float kCalibrationAlpha = 0.0F;
 
 /** Subtitle mode stores 3 menu choices, 0 to 2. */
 constexpr Range<std::int8_t> kSubtitlesMode{0, 2};
@@ -111,13 +108,13 @@ template <typename Value, std::size_t Count>
 }
 
 /**
- * Checks renderer values against the supported choices and working calibration values.
+ * Checks renderer choices and finite, nonnegative calibration values.
  * @return True when every number belongs to its supported domain.
  */
 [[nodiscard]] bool valid_display(const Display& value) noexcept {
     return within(value.brightness, kBrightness) && within(value.hdrMode, kTwoChoiceSelector)
-           && value.calibrationPrimary == kCalibrationPrimary
-           && value.calibrationAlpha == kCalibrationAlpha;
+           && std::isfinite(value.calibrationPrimary) && value.calibrationPrimary >= 0.0F
+           && std::isfinite(value.calibrationAlpha) && value.calibrationAlpha >= 0.0F;
 }
 
 /**
@@ -157,7 +154,9 @@ template <typename Value, std::size_t Count>
 bool valid(const AccountSettings& value) noexcept {
     return value.configured && value.keyBindings.configured && valid_controls(value.controls)
            && valid_audio(value.audio) && valid_display(value.display)
-           && valid_interface(value.interface) && valid_social(value.social);
+           && valid_interface(value.interface) && valid_social(value.social)
+           && value.pc.seedVersion >= 0 && value.pc.seedVersion <= 1
+           && value.pc.verticalSyncMode >= 0 && value.pc.verticalSyncMode <= 2;
 }
 
 } // namespace dawn::state::account::settings

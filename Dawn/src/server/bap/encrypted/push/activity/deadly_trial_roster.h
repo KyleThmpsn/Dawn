@@ -30,21 +30,19 @@ namespace wire=middleware::bap::activity_message::sensor_auth_update;
 // This also removes the town-only local from the preliminary overlay, so the
 // 408 -> 0 -> 8 transitions cannot reorder the final roster or reset its owner.
 inline constexpr std::uint64_t kRootBubbles=0xFFFFDFFF0000FFFFULL;
-template<class FindGroup>
-[[nodiscard]] bool prepare_layout(layouts::Definition& layout,FindGroup find) noexcept {
+template<class FindIndex,class FindGroup>
+[[nodiscard]] bool prepare_layout(layouts::Definition& layout,FindIndex findIndex,FindGroup find) noexcept {
     if(layout.tag!=native::kScenario || layout.nameLength!=16
         || std::string_view(layout.name.data(),layout.nameLength)!="adventure_ginger"
         || layout.bubbleCount!=64) { return false; }
     const native::Group* root{};
     for(const auto& group:native::kGroups) { if(group.topLevel) { if(root) { return false; }root=&group; } }
     if(!root) { return false; }
-    layouts::RosterGroup verified{};std::size_t index=root->hint;
-    bool resolved=find(index,verified) && matches(verified,*root);
-    for(std::size_t i=0;!resolved && i<layouts::kRosterGroupCapacity;++i) {
-        if(!find(i,verified)) { break; }
-        if(matches(verified,*root)) { index=i;resolved=true; }
-    }
-    if(!resolved || index>=layouts::kRosterGroupCapacity) { return false; }
+    // Cache extraction order is not a stable mission identity. Resolve the
+    // key first, then copy and validate only its matching descriptor record.
+    layouts::RosterGroup verified{};std::uint16_t index{};
+    if(!findIndex(root->key,root->tag,index) || index>=layouts::kRosterGroupCapacity
+        || !find(index,verified) || !matches(verified,*root)) { return false; }
     layout.authoredGroupCounts={};layout.authoredGroups={};
     for(std::size_t bubble=0;bubble<layout.bubbleCount;++bubble) {
         if((kRootBubbles&(1ULL<<bubble))==0) { continue; }
@@ -70,8 +68,8 @@ template<class FindGroup>
 }
 // The caller discards the entire scratch snapshot on failure. No cache mutation,
 // no pointers to temporary storage, and no group changes at encounter boundaries.
-template<class Storage,class FindGroup>
-[[nodiscard]] bool admit(const layouts::Definition& layout,Storage& storage,wire::Roster& roster,FindGroup find,std::uint32_t* failedKey=nullptr) noexcept {
+template<class Storage,class FindGroupByKey>
+[[nodiscard]] bool admit(const layouts::Definition& layout,Storage& storage,wire::Roster& roster,FindGroupByKey findByKey,std::uint32_t* failedKey=nullptr) noexcept {
     if(failedKey) { *failedKey=0; }
     if(layout.tag!=native::kScenario || layout.nameLength>layout.name.size()
         || std::string_view(layout.name.data(),layout.nameLength)!="adventure_ginger"
@@ -92,12 +90,7 @@ template<class Storage,class FindGroup>
         // another published group's spans. The temporary never escapes.
         layouts::RosterGroup check{};
         auto& group=count?check:storage.rosterGroups[roster.groupCount];
-        bool resolved=find(expected.hint,group) && matches(group,expected);
-        for(std::size_t i=0;!resolved && i<layouts::kRosterGroupCapacity;++i) {
-            if(!find(i,group)) { break; }
-            resolved=matches(group,expected);
-        }
-        if(!resolved) { return false; }
+        if(!findByKey(expected.key,expected.tag,group) || !matches(group,expected)) { return false; }
         std::size_t block=roster.bubbleSubBlocks.size();unsigned keys{},blocks{};
         for(std::size_t i=0;i<roster.bubbleSubBlocks.size();++i) {
             const auto& b=roster.bubbleSubBlocks[i];

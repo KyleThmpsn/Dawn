@@ -14,7 +14,8 @@ void apply(Session& session, const dawn::middleware::bap::activity_message::sens
     namespace admission = dawn::server::bap::encrypted::activity_message;
     const bool rosterReady = c.destinationBound && admission::omega_roster_readiness::exact_omega_initial_report(update);
     const bool opening = c.parsed && admission::omega_monitor_edges::entered(update, 20);
-    const bool forestEntrance = c.portalMutation && c.parsed && admission::omega_monitor_edges::entered(update, 24);
+    // This accepted capture used portal_mutation=true in the frozen policy.
+    const bool forestEntrance = c.parsed && admission::omega_monitor_edges::entered(update, 24);
     const bool destinationBound = c.destinationBound;
     const bool observerReset = c.parsed && c.handleBound && c.epochBound
         && (!destinationBound || (update.hasRosterAcknowledgement && !rosterReady));

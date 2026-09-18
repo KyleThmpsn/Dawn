@@ -49,6 +49,8 @@
     <ClCompile Include="..\src\state\build_data\abilities\ability_bucket_catalog.cpp" />
     <ClCompile Include="..\src\middleware\content\packages\tables\ability_pool_reader.cpp" />
     <ClCompile Include="..\src\state\editor\edit.cpp" />
+    <ClCompile Include="..\src\middleware\datagen\family4\character\character_encoder.cpp" />
+    <ClCompile Include="..\src\middleware\datagen\family4\character\equipment_summary_builder.cpp" />
     <ClCompile Include="..\src\state\account\account_state.cpp" />
     <ClCompile Include="..\src\state\account\inventory\inventory_state.cpp" />
     <ClCompile Include="..\src\state\account\settings\settings_state.cpp" />

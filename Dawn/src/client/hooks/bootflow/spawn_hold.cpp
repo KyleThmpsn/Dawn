@@ -427,6 +427,59 @@ void report_arrival(std::int32_t datum, bool allowed) noexcept {
 }
 
 /**
+ * Omega's old post-apply witness belonged to the quarantined schema probe. Observe the
+ * already-constructed native slots from the active arrival owner instead. No native state
+ * is written, and the server still requires the exact roster and approach before its scene.
+ */
+void acknowledge_omega_runtime(bool playerReady, state::activity::WorldPhase phase) noexcept {
+    if (!playerReady || phase != state::activity::WorldPhase::arrived
+        || state::activity::mission_authority_runtime_initialized()) { return; }
+    state::activity::forced::ForcedDestination destination{};
+    state::activity::forced::snapshot(destination);
+    if (!state::activity::forced::active(destination)
+        || destination.packageNameLength > destination.packageName.size()
+        || std::string_view(destination.packageName.data(), destination.packageNameLength)
+            != "mission_scot") { return; }
+    state::activity::destination::DestinationSelection joined{};
+    if (!state::activity::destination::snapshot(state::activity::newest_joined_activity(), joined)
+        || joined.packageNameLength > joined.packageName.size()
+        || std::string_view(reinterpret_cast<const char*>(joined.packageName.data()),
+               joined.packageNameLength) != "mission_scot") { return; }
+
+    const auto lookup = g_activitySlotLookup.load(std::memory_order_acquire);
+    const auto readWorld = g_worldState.load(std::memory_order_acquire);
+    const auto readLocal = g_localReady.load(std::memory_order_acquire);
+    ActivitySlotRecord script{}, director{};
+    spawn_hold_policy::OmegaRuntimeReadiness evidence{};
+    evidence.selected = true;
+    evidence.phase = spawn_hold_policy::Phase::arrived;
+    evidence.playerReady = playerReady;
+    __try {
+        evidence.worldReadable = readWorld && readWorld(&evidence.worldState);
+        evidence.localReady = readLocal && readLocal();
+        evidence.scriptFound = lookup && lookup(18, 0, &script);
+        evidence.directorFound = lookup && lookup(35, 0, &director);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    evidence.scriptDatum = static_cast<std::uint32_t>(script.datum);
+    evidence.directorDatum = static_cast<std::uint32_t>(director.datum);
+    evidence.scriptComponent = script.component;
+    evidence.directorComponent = director.component;
+    evidence.scriptOffset = script.relativeOffset;
+    evidence.directorOffset = director.relativeOffset;
+    if (!spawn_hold_policy::omega_runtime_ready(evidence) || !g_callGate.accepting()
+        || state::activity::world_phase() != state::activity::WorldPhase::arrived) { return; }
+    if (state::activity::acknowledge_mission_authority_runtime_initialized()) {
+        std::array<char, 352> line{};
+        std::snprintf(line.data(), line.size(),
+            "ev=bootflow stage=mission_authority_runtime_initialization result=acknowledged "
+            "package=mission_scot observer=native_arrival storage=created script=%08X director=%08X "
+            "world_state=3 local_ready=1 next=authority_preserve",
+            evidence.scriptDatum, evidence.directorDatum);
+        core::log::write(core::log::Channel::client, core::log::Level::info, line.data());
+    }
+}
+
+/**
  * Replaces Towerfall's unreachable migration-alias acknowledgement with the narrowest native
  * boundary available in this client, then arms the native launch producer. The manager-update
  * owner keeps retrying that producer until Destiny reaches native component dispatch.
@@ -570,6 +623,7 @@ __declspec(noinline) bool __fastcall spawn_gate(std::int32_t datum) noexcept {
     }
     if (call.accepts_side_effects() && decision.result
         && phase == state::activity::WorldPhase::arrived) {
+        acknowledge_omega_runtime(allowed, phase);
         attempt_towerfall_native_bootstrap(datum, allowed, phase);
     }
     return call.accepts_side_effects() ? decision.result : allowed;
@@ -669,7 +723,10 @@ __declspec(noinline) void poll_spawn_arrival() noexcept {
                 {line.data(), static_cast<std::size_t>(written)});
         }
     }
-    if(call.accepts_side_effects()) {poll_tower_recovery(tower,hasPlayer);}
+    if(call.accepts_side_effects()) {
+        acknowledge_omega_runtime(hasPlayer, phase);
+        poll_tower_recovery(tower,hasPlayer);
+    }
     if (!hasPlayer || (g_arrivalReported.load(std::memory_order_relaxed)
         && g_flyInReported.load(std::memory_order_relaxed))) {
         return;

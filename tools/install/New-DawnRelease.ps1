@@ -13,7 +13,8 @@ Use a DLL and content validated together. Packaging is not a playtest.
 param(
     [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')] [string] $Release,
     [string] $DllPath,
-    [string] $OutputDirectory
+    [string] $OutputDirectory,
+    [string] $ReleaseNotesPath
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -63,8 +64,11 @@ $files = @($inputs | ForEach-Object {
     if ((Get-FileHash -LiteralPath $destination).Hash -ne $_.Hash) { throw "Source changed while packaging: $($_.Source)" }
     [ordered]@{ path = $_.Path; size = (Get-Item -LiteralPath $destination).Length; sha256 = $_.Hash.ToLowerInvariant() }
 })
-foreach ($name in @('Install-Dawn.ps1', 'Install-Dawn.cmd', 'READ-ME.txt')) {
+foreach ($name in @('Install-Dawn.ps1', 'Install-Dawn.cmd', 'Update-Dawn.ps1', 'Update-Dawn.cmd', 'READ-ME.txt')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "release/$name") -Destination (Join-Path $output $name)
+}
+if ($ReleaseNotesPath) {
+    Copy-Item -LiteralPath $ReleaseNotesPath -Destination (Join-Path $output 'RELEASE-NOTES.md')
 }
 $manifest = [ordered]@{
     schema = 1; release = $Release; gameBuild = 86657; runtimeDirectory = 'Dawn';

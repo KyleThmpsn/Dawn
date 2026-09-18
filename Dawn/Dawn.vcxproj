@@ -186,6 +186,8 @@
     <ClCompile Include="src\middleware\web_service\messages\opcode402_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode403_codec.cpp" />
     <ClCompile Include="src\middleware\web_service\messages\opcode406_codec.cpp" />
+    <ClCompile Include="src\middleware\web_service\messages\opcode701_codec.cpp" />
+    <ClCompile Include="src\state\account\settings\settings_runtime.cpp"><ObjectFileName>$(IntDir)account_settings_runtime.obj</ObjectFileName></ClCompile>
     <ClCompile Include="src\middleware\web_service\messages\opcode1820_codec.cpp" />
     <ClCompile Include="src\state\runtime\state_account_runtime.cpp" />
     <ClCompile Include="src\state\runtime\state_account_acquisition_runtime.cpp" />

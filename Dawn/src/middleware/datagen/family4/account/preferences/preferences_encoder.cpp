@@ -7,16 +7,12 @@ namespace {
 
 /** Native keybinding halves use input code 0x74 as the unbound sentinel. */
 constexpr std::uint16_t kUnboundInputCode = 0x0074;
-/** Seed version 0 lets the client set up local mirrors once after sign-in. */
-constexpr std::int32_t kOpenSeedVersion = 0;
 /**
  * Seed version 1 closes a gate so the client keeps the replicated values behind it.
- * The keybinding gate stays open so the client seeds its own defaults. The post-processing gate
- * stays closed, or local cvars would overwrite its 3 replicated fields on every sign-in.
+ * The post-processing gate stays closed, or local cvars overwrite its 3 replicated fields.
+ * The PC gate is persisted separately once the client has completed its initial seed pass.
  */
 constexpr std::int32_t kClosedSeedVersion = 1;
-/** Source 0 makes later input reads use the replicated keybinding array. */
-constexpr std::uint8_t kReplicatedBindingSource = 0;
 
 /**
  * Converts a semantic boolean to the native 1-byte form.
@@ -53,8 +49,12 @@ bool encode(const state::account::settings::AccountSettings& settings,
     record = {};
     bindingsRecord = {};
     record.postProcessingSeedVersion = kClosedSeedVersion;
-    bindingsRecord.accountSeedVersion = kOpenSeedVersion;
-    bindingsRecord.sourceSelector = kReplicatedBindingSource;
+    bindingsRecord.accountSeedVersion = settings.pc.seedVersion;
+    bindingsRecord.sourceSelector = native_boolean(settings.pc.useLocalKeyBindings);
+    bindingsRecord.voiceChatMirror = native_boolean(settings.pc.seedVersion == 0
+        ? settings.social.voiceChatEnabled : settings.pc.voiceChatEnabled);
+    bindingsRecord.verticalSyncMirror = static_cast<std::uint8_t>(settings.pc.verticalSyncMode);
+    bindingsRecord.fieldOfViewAdjustment = settings.pc.fieldOfViewAdjustment;
 
     const auto& controls = settings.controls;
     record.buttonLayout = controls.buttonLayout;
@@ -90,6 +90,9 @@ bool encode(const state::account::settings::AccountSettings& settings,
     record.hdrMode = display.hdrMode;
     record.calibrationPrimary = display.calibrationPrimary;
     record.calibrationAlpha = display.calibrationAlpha;
+    record.motionBlurMirror = native_boolean(display.motionBlur);
+    record.filmGrainMirror = native_boolean(display.filmGrain);
+    record.chromaticAberrationMirror = native_boolean(display.chromaticAberration);
 
     const auto& interfaceSettings = settings.interface;
     record.subtitlesMode = interfaceSettings.subtitlesMode;
@@ -119,7 +122,6 @@ bool encode(const state::account::settings::AccountSettings& settings,
     record.localChatJoinMode = social.localChatJoinMode;
     record.clanChatJoinMode = social.clanChatJoinMode;
     record.chatAutoHideMode = social.chatAutoHideMode;
-    bindingsRecord.voiceChatMirror = native_boolean(social.voiceChatEnabled);
 
     for (std::size_t nativeSlot = 0; nativeSlot < kActionsBySlot.size(); ++nativeSlot) {
         const auto action = kActionsBySlot[nativeSlot];

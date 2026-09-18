@@ -46,8 +46,8 @@ bool before(const void* context,std::byte* packet) noexcept {
     const auto result=mission::boss_damage::clamp(span,sample.bodyRegion,mission::boss_damage::floor(request.stage));
     if(result==mission::boss_damage::Packet::invalid || !current(request)) {return false;}
     if(result==mission::boss_damage::Packet::clamped) {
-        // Write only the target fraction of matching body entries. The native
-        // callback retains its own packet, hit reactions and real death rules.
+        // Preserve unrelated fields and hit reactions. Protected body targets
+        // and the packet's now-invalid lethal prediction must agree.
         for(int i=0;i<count;++i) {
             const auto offset=0x70+static_cast<std::size_t>(i)*12;
             if(std::memcmp(bytes.data()+offset,original.data()+offset,sizeof(float))==0) {continue;}
@@ -55,9 +55,16 @@ bool before(const void* context,std::byte* packet) noexcept {
             if(!WriteProcessMemory(GetCurrentProcess(),packet+offset,bytes.data()+offset,sizeof(float),&written)
                 || written!=sizeof(float)) {return false;}
         }
+        constexpr auto flags=mission::boss_damage::kLethalFlagsOffset;
+        const bool lethalCleared=bytes[flags]!=original[flags];
+        if(lethalCleared) {
+            SIZE_T written{};
+            if(!WriteProcessMemory(GetCurrentProcess(),packet+flags,bytes.data()+flags,1,&written)
+                || written!=1) {return false;}
+        }
         std::array<char,192> line{};
-        const auto n=std::snprintf(line.data(),line.size(),"ev=hijacked_boss stage=damage_clamped run=%llu actor=%08X phase=%u floor=%.6f",
-            static_cast<unsigned long long>(request.enemy.run),request.enemy.actor,request.stage,mission::boss_damage::floor(request.stage));
+        const auto n=std::snprintf(line.data(),line.size(),"ev=hijacked_boss stage=damage_clamped run=%llu actor=%08X phase=%u floor=%.6f lethal_cleared=%u",
+            static_cast<unsigned long long>(request.enemy.run),request.enemy.actor,request.stage,mission::boss_damage::floor(request.stage),static_cast<unsigned>(lethalCleared));
         if(n>0 && static_cast<std::size_t>(n)<line.size()) {core::log::write(core::log::Channel::client,core::log::Level::info,{line.data(),static_cast<std::size_t>(n)});}
     }
     return true;

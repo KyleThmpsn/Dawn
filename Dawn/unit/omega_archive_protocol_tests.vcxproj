@@ -29,6 +29,7 @@
     <ClCompile Include="$(OmegaSourceRoot)\middleware\bap\activity_message\activity_sensor_auth_encoder.cpp" />
     <ClCompile Condition="'$(OmegaVariant)'!='reference'" Include="$(OmegaSourceRoot)\middleware\bap\activity_message\activity_sensor_auth_encoder_other_missions.cpp" />
     <ClCompile Include="$(OmegaSourceRoot)\middleware\encoding\bit_writer.cpp" />
+    <ClCompile Condition="'$(OmegaVariant)'!='reference'" Include="$(OmegaSourceRoot)\middleware\encoding\bit_reader.cpp" />
 
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -11,6 +11,7 @@
 #include <limits>
 namespace ds=dawn::state::activity::deep_storage;
 namespace coo=dawn::state::activity::coo;
+void deep_storage_runtime_startup_checks();
 static void check(bool ok,const char* what) {if(!ok) {std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
 // The production installer plans must not patch an entry that another owner
 // already changed before mission receipt hooks can finish installing.
@@ -521,6 +522,7 @@ check(c.select(views,run),"same activity can restart after reset");
     }
 };
 int main() {
+    deep_storage_runtime_startup_checks();
     shared_hook_ownership_checks();playback_checks();plate_presentation_checks();deep_lens_damage_fixture::run(check);const auto text=shipped();auto doc=parse(text);check(doc!=nullptr,"shipped mission compiles");
     check(doc->views().phases.size()==7,"seven authored mission sections");
     for(const auto* graph:doc->views().phases) for(const auto& step:graph->definition.steps) for(const auto& command:step.commands) {

@@ -21,7 +21,7 @@
 namespace dawn::state::persistence {
 namespace {
 
-constexpr int kSchemaVersion = 4;
+constexpr int kSchemaVersion = 5;
 /** Additive roll storage; old instances remain curated and are never rerolled on load. */
 constexpr const char* kRollSchema = R"sql(
 CREATE TABLE IF NOT EXISTS item_rolls(instance_soid TEXT PRIMARY KEY, entropy BLOB NOT NULL CHECK(length(entropy)=8), lane_mask INTEGER NOT NULL CHECK(lane_mask>=0 AND lane_mask<4096), owned_rows BLOB NOT NULL CHECK(length(owned_rows)=96), FOREIGN KEY(instance_soid) REFERENCES character_items(instance_soid) ON DELETE CASCADE);
@@ -195,7 +195,16 @@ ALTER TABLE vendor_unlocks_v3 RENAME TO vendor_unlocks;
 
 [[nodiscard]] bool migrate_schema(int version) noexcept {
     if (version == kSchemaVersion) return true;
-    if (version == 3) return execute(kRollSchema) && execute("PRAGMA user_version=4");
+    if (version == 4) return execute(R"sql(
+INSERT OR IGNORE INTO settings_values(key,integer_value) VALUES
+('display.motionBlur',0),('display.filmGrain',0),('display.chromaticAberration',0),
+('pc.seedVersion',0),('pc.verticalSyncMode',0),('pc.fieldOfViewAdjustment',0),
+('pc.useLocalKeyBindings',0);
+INSERT OR IGNORE INTO settings_values(key,integer_value)
+SELECT 'pc.voiceChatEnabled',integer_value FROM settings_values WHERE key='social.voiceChatEnabled';
+PRAGMA user_version=5;
+)sql");
+    if (version == 3) return execute(kRollSchema) && migrate_schema(4);
     if (version == 2) return migrate_vendor_v2() && migrate_schema(3);
     if (version != 1) return false;
     return execute(R"sql(
@@ -274,6 +283,9 @@ template <typename T>
     WRITE_I(audio,soundEffectsVolume); WRITE_I(audio,dialogueVolume); WRITE_I(audio,musicVolume);
     WRITE_I(display,brightness); WRITE_I(display,showFps); WRITE_I(display,hdrMode);
     WRITE_R(display,calibrationPrimary); WRITE_R(display,calibrationAlpha);
+    WRITE_I(display,motionBlur); WRITE_I(display,filmGrain); WRITE_I(display,chromaticAberration);
+    WRITE_I(pc,seedVersion); WRITE_I(pc,voiceChatEnabled); WRITE_I(pc,verticalSyncMode);
+    WRITE_I(pc,fieldOfViewAdjustment); WRITE_I(pc,useLocalKeyBindings);
     WRITE_I(interface,subtitlesMode); WRITE_I(interface,colorblindMode); WRITE_I(interface,helmetMode);
     WRITE_I(interface,hudOpacity); WRITE_I(interface,displayHints); WRITE_I(interface,backgroundOpacity);
     WRITE_I(interface,reticleLocation); WRITE_I(interface,reticleColor); WRITE_I(interface,textSize);
@@ -455,6 +467,14 @@ void observe_allocators(const AccountState& account) noexcept {
         ELSE_I("display.hdrMode",settings.display.hdrMode)
         ELSE_R("display.calibrationPrimary",settings.display.calibrationPrimary)
         ELSE_R("display.calibrationAlpha",settings.display.calibrationAlpha)
+        ELSE_I("display.motionBlur",settings.display.motionBlur)
+        ELSE_I("display.filmGrain",settings.display.filmGrain)
+        ELSE_I("display.chromaticAberration",settings.display.chromaticAberration)
+        ELSE_I("pc.seedVersion",settings.pc.seedVersion)
+        ELSE_I("pc.voiceChatEnabled",settings.pc.voiceChatEnabled)
+        ELSE_I("pc.verticalSyncMode",settings.pc.verticalSyncMode)
+        ELSE_I("pc.fieldOfViewAdjustment",settings.pc.fieldOfViewAdjustment)
+        ELSE_I("pc.useLocalKeyBindings",settings.pc.useLocalKeyBindings)
         ELSE_I("interface.subtitlesMode",settings.interface.subtitlesMode)
         ELSE_I("interface.colorblindMode",settings.interface.colorblindMode)
         ELSE_I("interface.helmetMode",settings.interface.helmetMode)
@@ -488,7 +508,7 @@ void observe_allocators(const AccountState& account) noexcept {
         if(!matched) return false;
         ++count;
     }
-    if(result!=SQLITE_DONE||count!=56) return false;
+    if(result!=SQLITE_DONE||count!=64) return false;
     Statement bindings{"SELECT action,primary_input,secondary_input FROM key_bindings ORDER BY action"};
     if(!bindings.ready()) return false;
     std::size_t bindingCount=0;
@@ -948,6 +968,20 @@ bool commit_account(const AccountState& before,const AccountState& after) noexce
     const std::int64_t previousRevision=accountRevision;
     if(!migrate_owners(before,after)||!write_account(after)||!advance_revision()||!commit()) {
         rollback();accountRevision=previousRevision;log_failure("commit_account");return false;
+    }
+    return true;
+}
+
+bool commit_settings(const account::settings::AccountSettings& settings) noexcept {
+    Lock lock;
+    if (!account::settings::valid(settings)) return false;
+    if (memoryOnly) return true;
+    if (database == nullptr || !begin()) return false;
+    const auto previousRevision = accountRevision;
+    if (!write_settings(settings) || !advance_revision() || !commit()) {
+        log_failure("commit_settings");
+        rollback(); accountRevision = previousRevision;
+        return false;
     }
     return true;
 }

@@ -186,6 +186,13 @@ void roster() {
         if(e.topLevel) { auto& dest=storage->rosterGroups[roster.groupCount];dest=a;roster.groups[roster.groupCount++]={dest.registryKey,std::span(dest.slotTypes).first(dest.slotCount),std::span(dest.slotFlags).first(dest.slotCount),std::span(dest.slotIndices).first(dest.slotCount)}; }
     }
     roster.topLevelGroupCount=roster.groupCount;const auto lookup=[&](std::size_t i,r::layouts::RosterGroup& out) noexcept { if(i>=cache->size()) { return false; }out=(*cache)[cache->size()-1-i];return true; };
+    const auto indexByKey=[&](std::uint32_t key,std::uint32_t tag,std::uint16_t& out) noexcept {
+        for(std::size_t i=0;i<cache->size();++i) if((*cache)[cache->size()-1-i].registryKey==key && (*cache)[cache->size()-1-i].objectTag==tag) {out=static_cast<std::uint16_t>(i);return true;}
+        return false;
+    };
+    const auto byKey=[&](std::uint32_t key,std::uint32_t tag,r::layouts::RosterGroup& out) noexcept {
+        std::uint16_t index{};return indexByKey(key,tag,index) && lookup(index,out);
+    };
     // Real cache row from the first failed run: town retains its two-entry
     // overlay, both alleys lose the root when extraction exceeds five entries.
     namespace records=dawn::state::build_data::cache::records;
@@ -193,7 +200,7 @@ void roster() {
     CHECK(input.read(reinterpret_cast<char*>(&captured),sizeof captured));
     r::layouts::Definition transition{};CHECK(records::decode(captured,transition));
     CHECK(transition.authoredGroupCounts[51]==2);CHECK(transition.authoredGroupCounts[0]==0);CHECK(transition.authoredGroupCounts[1]==0);
-    const auto original=transition;CHECK(r::prepare_layout(transition,lookup));
+    const auto original=transition;CHECK(r::prepare_layout(transition,indexByKey,lookup));
     for(auto bubble:{51U,0U,1U}) {
         CHECK(transition.authoredGroupCounts[bubble]==1);
         r::layouts::RosterGroup root{};CHECK(lookup(transition.authoredGroups[bubble][0],root));CHECK(root.registryKey==t::kRoot);
@@ -203,17 +210,17 @@ void roster() {
     CHECK(transition.bubbleGroups==original.bubbleGroups);CHECK(transition.bubbleGroupMasks==original.bubbleGroupMasks);
     CHECK(transition.bubbleStates==original.bubbleStates);CHECK(transition.bubbleHashes==original.bubbleHashes);
     CHECK(transition.bubbleMapIndices==original.bubbleMapIndices);CHECK(transition.packages==original.packages);
-    const auto stable=transition;CHECK(r::prepare_layout(transition,lookup));CHECK(transition.authoredGroups==stable.authoredGroups);
+    const auto stable=transition;CHECK(r::prepare_layout(transition,indexByKey,lookup));CHECK(transition.authoredGroups==stable.authoredGroups);
     auto rejected=original;
-    CHECK(!r::prepare_layout(rejected,[](std::size_t,r::layouts::RosterGroup&) noexcept { return false; }));
+    CHECK(!r::prepare_layout(rejected,indexByKey,[](std::size_t,r::layouts::RosterGroup&) noexcept { return false; }));
     CHECK(rejected.authoredGroups==original.authoredGroups);CHECK(rejected.authoredGroupCounts==original.authoredGroupCounts);
-    rejected.tag^=1;CHECK(!r::prepare_layout(rejected,lookup));
+    rejected.tag^=1;CHECK(!r::prepare_layout(rejected,indexByKey,lookup));
     layout=transition;
-    CHECK(r::admit(layout,*storage,roster,lookup));CHECK(roster.groupCount==std::size(t::kGroups));CHECK(roster.bubbleSubBlocks.size()==3);CHECK(r::admit(layout,*storage,roster,lookup));
+    CHECK(r::admit(layout,*storage,roster,byKey));CHECK(roster.groupCount==std::size(t::kGroups));CHECK(roster.bubbleSubBlocks.size()==3);CHECK(r::admit(layout,*storage,roster,byKey));
     for(const auto& e:t::kGroups) if(!e.topLevel) { unsigned count{};for(const auto& block:roster.bubbleSubBlocks) for(auto key:block.keys) if(key==e.key) { CHECK(block.bubble==e.bubble);++count; }CHECK(count==1); }
     wire::Snapshot snapshot{};snapshot.roster=roster;snapshot.lifetime=3;snapshot.deadly_trial.enabled=true;snapshot.deadly_trial.spawnGeneration=7;snapshot.deadly_trial.cohorts=1022;snapshot.deadly_trial.sceneGeneration=7;snapshot.deadly_trial.pikes=2;snapshot.deadly_trial.reviveEnabled=true;
     std::array<std::byte,32768> data{};std::size_t written{};CHECK(wire::encode_sensor_auth_update(snapshot,data,written));CHECK(written<data.size());std::printf("Trial roster packet: %zu bytes, %zu groups\n",written,roster.groupCount);
-    layout.tag^=1;CHECK(!r::admit(layout,*storage,roster,lookup));
+    layout.tag^=1;CHECK(!r::admit(layout,*storage,roster,byKey));
 }
 void presentation_and_overpass(const c::script::Views& views) {
     namespace native=dawn::client::hooks::bootflow::deadly_trial_presentation;

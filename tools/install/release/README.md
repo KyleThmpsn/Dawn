@@ -14,14 +14,42 @@ The default input is `build/x64/Release/steam_api64.dll`. `-DllPath` and
 `-OutputDirectory` can override those paths. Use a DLL built and validated with
 the current content. The tool creates a new directory and ZIP, refuses to
 overwrite an existing release, and prints the ZIP hash. Send players the ZIP.
-They extract it and double-click `Install-Dawn.cmd`.
+They extract it and double-click `Update-Dawn.cmd` to keep an existing save,
+or `Install-Dawn.cmd` to start fresh.
 
-## Replacement and fresh-save contract
+## Preserving updates
+
+`Update-Dawn.ps1` delegates to the same transaction engine with `-Update`.
+It requires an existing Dawn profile and supports `-GameRoot`, `-WhatIf`,
+`-Restore`, and `-BackupPath`. It does not require build tools or Python.
+
+- Keep each runtime's database, WAL/SHM/journal companions, identity, settings,
+  HUD/movement/player preferences, event selections, and custom files.
+- Keep existing configuration bytes; missing configuration files use the release
+  defaults. The runtime handles supported older configuration/save migrations.
+- Keep separate root/bin profiles separate. If a runtime folder is absent,
+  copy the existing Dawn profile into that load location.
+- Install current packaged scripts, vendor rules, presets and licenses. Remove
+  retired managed content only when the prior release receipt identifies it.
+  Other custom files remain. Previous versions remain in the full backup.
+- Omit derived caches from the new runtime. Do not touch native CVARS or display
+  preferences, including during rollback of an update.
+- Validate personal JSON and all package hashes before replacement. Check every
+  preserved file against its original hash before and after replacement.
+- Reject known release downgrades and refuse an update with no Dawn profile.
+  Sunrise/Restoration profiles are not selected implicitly.
+- Use the same backup, interrupted-transaction recovery, process checks and
+  automatic rollback as fresh installation. Repeat updates preserve progress.
+
+Run `tools/install/tests/release_installer.tests.ps1` on Windows PowerShell 5.1
+and current PowerShell. It tests both modes in disposable fixtures.
+
+## Fresh-install contract
 
 - Check the executable's exact file version, `86657.20.08.23.1800.d2_rc`.
 - Validate every payload file against its required SHA-256 manifest; reject
   unknown paths, extra files, traversal, and links/junctions.
-- Every installation, including a reinstall, starts a fresh save. No migration
+- `Install-Dawn.ps1` without `-Update`, including a reinstall, starts a fresh save. No migration
   or `-SourceRuntime` selection is performed. Multiple legacy profiles and
   malformed old settings do not block installation.
 - Install configuration byte-for-byte from the release. Do not copy or merge

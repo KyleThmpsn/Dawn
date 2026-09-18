@@ -15,6 +15,36 @@
 #include <chrono>
 #include "state/build_data/abilities/ability_bucket_catalog.h"
 #include "middleware/datagen/family4/loadout/subclass_socket_selection.h"
+#include "middleware/datagen/family4/loadout/loadout_resolver.h"
+#include "middleware/datagen/family4/character/character_encoder.h"
+#include "middleware/datagen/family4/character/layout.h"
+#include "middleware/datagen/family4/progression/progression_bank_keys.h"
+#include "state/unlocks/unlocks_runtime.h"
+#include "state/build_data/vendors/service_catalog.h"
+
+// These inventory fixtures have no active quests, events, or persisted unlocks.
+namespace dawn::state::build_data::vendors::services {
+bool quest_step(std::uint16_t, QuestStep&) noexcept { return false; }
+bool pursuit(std::uint16_t, Pursuit&) noexcept { return false; }
+bool objective(std::uint16_t, Objective&) noexcept { return false; }
+Binding binding(bool, std::uint16_t) noexcept { return {}; }
+}
+namespace dawn::state::activity::events {
+bool withheld(std::uint32_t) noexcept { return true; }
+}
+namespace dawn::state::unlocks {
+ScopedTable snapshot() noexcept { return {}; }
+bool find_character(const ScopedTable&, std::uint64_t, CharacterTable& output) noexcept {
+    output = {}; return false;
+}
+}
+namespace dawn::middleware::datagen::family4::progression {
+bool key_bank(state::build_data::progressions::Scope, std::uint64_t,
+    const state::unlocks::ScopedTable&, std::span<layout::Entry> bank) noexcept {
+    for (auto& entry : bank) { entry = {}; entry.definitionIndex = 0xFFFF; }
+    return true;
+}
+}
 
 namespace ui = dawn::core::ui;
 namespace editor = dawn::state::editor;
@@ -57,10 +87,10 @@ void mutations() {
     auto draft = std::make_unique<editor::Draft>(); draft->after = *fixture::account; draft->before = draft->after;
     const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
     std::string error;
-    fixture::check(editor::give(*draft, catalog, 0, weapon.definition.definitionHash, 1, 1050, true, error), "give and equip native gun");
+    fixture::check(editor::give(*draft, catalog, 0, weapon.definition.definitionHash, 1, 105, true, error), "give and equip native gun");
     const auto id = draft->after.characters[0].equipment.slots[weapon.slot]->instanceSoid;
     const auto before = std::make_unique<editor::Draft>(*draft);
-    fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,2,1050,true,error) && draft->after == before->after, "instanced stack rejection is atomic");
+    fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,2,105,true,error) && draft->after == before->after, "instanced stack rejection is atomic");
     auto& item = *draft->after.characters[0].equipment.slots[weapon.slot];
     fixture::check(editor::materialize(item,catalog), "native sockets materialize");
     bool expanded = false;
@@ -78,25 +108,110 @@ void mutations() {
     }
     fixture::check(expanded,"full pool exercised");
     *draft = *before;
-    for (unsigned i = 0; i < 9; ++i) fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,1050,false,error),"fill weapon bucket");
+    for (unsigned i = 0; i < 9; ++i) fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,105,false,error),"fill weapon bucket");
     const auto full = std::make_unique<editor::Draft>(*draft);
-    fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,1050,false,error) && draft->after == full->after,"full bucket preserves all existing items");
+    fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,105,false,error) && draft->after == full->after,"full bucket preserves all existing items");
     auto slots = std::array<bool,16>{}; slots[weapon.slot] = true; std::mt19937 random{17};
-    fixture::check(editor::randomize(*draft,catalog,0,slots,1050,random,error), "randomizer reuses owned gear in full bucket");
+    fixture::check(editor::randomize(*draft,catalog,0,slots,106,random,error), "randomizer reuses owned gear in full bucket");
     fixture::check(draft->after.characters[0].inventory.count == 9,"randomizer preserves item count when full");
+    fixture::check(draft->after.characters[0].equipment.slots[weapon.slot]->level == 106,"randomizer applies selected level to reused gear");
     *draft = *before; draft->before = draft->after;
-    draft->after.characters[0].equipment.slots[weapon.slot]->level = 999;
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 106;
     auto prepared = std::make_unique<dawn::state::AccountState>();
     fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"edited item prepares to save");
     fixture::check(prepared->characters[0].equipment.slots[weapon.slot]->mutationSerial > draft->before.characters[0].equipment.slots[weapon.slot]->mutationSerial,"direct edits advance item revision");
     // A known armor piece must derive a realizable result from its native stat plugs.
     const auto& armor = named("Dunemarchers");
-    fixture::check(editor::give(*draft,catalog,0,armor.definition.definitionHash,1,1050,true,error),"give native armor");
+    fixture::check(editor::give(*draft,catalog,0,armor.definition.definitionHash,1,105,true,error),"give native armor");
     auto& equipped = *draft->after.characters[0].equipment.slots[armor.slot];
     editor::Stats achieved{}, desired{30,0,0,30,0,0};
     fixture::check(editor::adjust_stats(equipped,catalog,desired,achieved),"armor stat allocation has native candidates");
     fixture::check(achieved == editor::item_stats(equipped,catalog),"reported armor stats equal actual plug contributions");
     fixture::check(dawn::state::account::valid(draft->after),"mutated account remains structurally valid");
+}
+void item_level_limits() {
+    auto draft = std::make_unique<editor::Draft>();
+    draft->after = *fixture::account; draft->before = draft->after;
+    const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
+    std::string error;
+    fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,true,error),"level 106 accepted");
+    const auto before = std::make_unique<editor::Draft>(*draft);
+    auto slots = std::array<bool,16>{}; slots[weapon.slot] = true;
+    std::mt19937 random{17};
+    for (int level : {-1,107}) {
+        fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,level,true,error)
+            && draft->after == before->after,"invalid creation level rejected atomically");
+        fixture::check(!editor::randomize(*draft,catalog,0,slots,level,random,error)
+            && draft->after == before->after,"invalid randomizer level rejected atomically");
+    }
+    auto prepared = std::make_unique<dawn::state::AccountState>();
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 107;
+    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"direct over-cap edit cannot save");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 106;
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"level 106 saves");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 999;
+    draft->before = draft->after;
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"existing over-cap level preserved");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 107;
+    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"new level on legacy gear obeys cap");
+}
+bool character_selection_encodes(const dawn::state::AccountState& account) {
+    namespace family = dawn::middleware::datagen::family4;
+    auto resolved = std::make_unique<family::loadout::ResolvedLoadout>();
+    if (!family::loadout::resolve(account, 0, *resolved)) return false;
+    dawn::state::equipment::light::Evaluation light{};
+    for (std::size_t i = 0; i < resolved->itemCount; ++i) {
+        const auto& item = resolved->items[i];
+        if (!item.equipped) continue;
+        std::int32_t power{};
+        if (!dawn::state::equipment::light::item_power(item.instance.level, power)) return false;
+        light.character[item.equipmentSlot] = {item.instance.baseDefinitionIndex, power};
+        if (power > 0) { light.total += power; ++light.divisor; }
+    }
+    if (!light.divisor) return false;
+    light.average = light.total / light.divisor;
+    light.averageFloat = static_cast<float>(light.total) / static_cast<float>(light.divisor);
+    std::vector<std::byte> bytes(family::character::layout::kObjectSize);
+    return family::character::encode(account.characters[0], *resolved, light, bytes, &account);
+}
+void inventory_serial_selection() {
+    auto draft = std::make_unique<editor::Draft>();
+    draft->after = *fixture::account; draft->before = draft->after;
+    const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
+    std::string error;
+    draft->after.characters[0].nextInventorySerial = 72;
+    fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,true,error),"serial fixture creates equipped item");
+    fixture::check(character_selection_encodes(draft->after),"editor-created gear passes real character selection encoder");
+    draft->before = draft->after;
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = 105;
+    auto prepared = std::make_unique<dawn::state::AccountState>();
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error) && character_selection_encodes(*prepared),"direct level edit survives character selection");
+    draft->before = draft->after = *prepared;
+    fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,false,error)
+        && character_selection_encodes(draft->after),"inventory creation survives character selection");
+    fixture::check(editor::equip(*draft,catalog,0,draft->after.characters[0].inventory.values[0].instanceSoid,error)
+        && character_selection_encodes(draft->after),"equipment swap survives character selection");
+    auto slots = std::array<bool,16>{}; slots[weapon.slot] = true; std::mt19937 random{17};
+    fixture::check(editor::randomize(*draft,catalog,0,slots,106,random,error)
+        && character_selection_encodes(draft->after),"randomization survives character selection");
+    // Exact failing invariant from the user's save: max item revision 74, next revision 74.
+    auto& character = draft->after.characters[0];
+    for (auto& item : character.equipment.slots) if (item) item->mutationSerial = 70;
+    for (std::size_t i = 0; i < character.inventory.count; ++i) character.inventory.values[i].mutationSerial = 70;
+    character.inventory.values[0].mutationSerial = 74; character.nextInventorySerial = 74;
+    draft->before = draft->after;
+    fixture::check(!character_selection_encodes(draft->after),"captured 74/74 invariant reproduces selection failure");
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error)
+        && prepared->characters[0].nextInventorySerial == 75
+        && character_selection_encodes(*prepared),"repair counter without changing any owned item");
+    auto expected = std::make_unique<dawn::state::AccountState>(draft->after);
+    expected->characters[0].nextInventorySerial = 75;
+    fixture::check(*expected == *prepared,"repair preserves every item and account setting");
+    character.nextInventorySerial = INT32_MAX;
+    const auto before = std::make_unique<dawn::state::AccountState>(draft->after);
+    fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,false,error)
+        && draft->after == *before,"serial exhaustion cannot overflow or alter draft");
+    std::cout << "PASS: inventory edits and captured 74/74 repair through production character encoder\n";
 }
 void transactions() {
     auto draft = std::make_unique<editor::Draft>(); draft->after = *fixture::account;
@@ -109,7 +224,7 @@ void transactions() {
     }
     for (std::size_t i = 0; i < 3; ++i) {
         auto& c = draft->after.characters[i]; c.characterClass = dawn::state::CharacterClass::titan;
-        fixture::check(editor::give(*draft,catalog,i,subclass.definition.definitionHash,1,1050,true,error),"equip subclass on each character");
+        fixture::check(editor::give(*draft,catalog,i,subclass.definition.definitionHash,1,105,true,error),"equip subclass on each character");
         c.movementAbilityEntry = 4; c.grenadeAbilityEntry = 7; c.superAbilityEntry = subclass.paths[0].super;
         c.meleeAbilityEntry = subclass.paths[0].melee; c.classAbilityEntry = 2;
     }
@@ -168,7 +283,7 @@ void transactions() {
     for (const auto& item : catalog.items) if (!item.abilities[0].empty()) for (const auto& path : item.paths) {
         auto c = std::make_unique<editor::Draft>(); c->after = *fixture::account;
         c->after.characters[0].characterClass = static_cast<dawn::state::CharacterClass>(item.characterClass);
-        fixture::check(editor::give(*c,catalog,0,item.definition.definitionHash,1,1050,true,error),"path fixture subclass");
+        fixture::check(editor::give(*c,catalog,0,item.definition.definitionHash,1,105,true,error),"path fixture subclass");
         auto& character = c->after.characters[0]; character.movementAbilityEntry = 4; character.grenadeAbilityEntry = 7;
         character.superAbilityEntry = path.super; character.meleeAbilityEntry = path.melee; character.classAbilityEntry = 2;
         live = c->before = c->after; character.level = 40; c->dirty = true;
@@ -235,7 +350,7 @@ void report_ability_failure(const char* stage, std::size_t character, std::size_
 }
 }
 int main(int argc, char** argv) {
-    fixture::check(argc == 4,"usage: editor_visual_tests <fixtures> <screenshots> <installed-font>");
+    fixture::check(argc == 4 || (argc == 5 && std::string_view(argv[4]) == "--serial-only"),"usage: editor_visual_tests <fixtures> <screenshots> <installed-font> [--serial-only]");
     fixture::load(argv[1]); std::filesystem::create_directories(argv[2]);
     const std::filesystem::path screens = argv[2];
     migration(screens);
@@ -255,6 +370,8 @@ int main(int argc, char** argv) {
     ui::layout::credits::request_open(ui::layout::credits::Project::original);
     fixture::check(ui::layout::credits::dispatch_pending([](const wchar_t* url) noexcept { return std::wstring_view(url) == ui::layout::credits::kSourceUrl; }),"Credits preserves original source URL");
     fixture::check(editor::load_catalog(panel::g->catalog,panel::g->cancel,panel::g->progress,panel::g->loadError),panel::g->loadError.c_str());
+    inventory_serial_selection();
+    if (argc == 5) return 0;
     panel::g->loading = 2;
     const auto& catalog = panel::g->catalog;
     std::size_t names{}, weapons{}, armor{}, previews{};
@@ -281,10 +398,10 @@ int main(int argc, char** argv) {
     }
     std::cout << "Artwork: " << artwork.size() << " distinct installed previews decoded.\n";
     fixture::check(missingArtwork == 0,"every named weapon and armor preview decodes");
-    mutations(); transactions(); panel::reload();
+    mutations(); item_level_limits(); transactions(); panel::reload();
     std::string status;
     for (const auto* name : {"Riskrunner","Dunemarchers","Peacekeepers","Synthoceps"}) {
-        const auto& item = named(name); (void)editor::give(*panel::g->draft,catalog,0,item.definition.definitionHash,1,1050,false,status);
+        const auto& item = named(name); (void)editor::give(*panel::g->draft,catalog,0,item.definition.definitionHash,1,105,false,status);
     }
     fixture::check(ui::memory::initialize(),"fixed UI arena"); ImGui::CreateContext();
     auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.DeltaTime = 1.0F / 60;
@@ -334,7 +451,7 @@ int main(int argc, char** argv) {
     panel::g->scope = 4; panel::g->perkOptions = catalog.candidates(*catalog.find(owned.definitionHash),0,editor::PlugScope::all);
     settle(); screenshot(screens/"full-perk-pool.ppm"); ImGui::ClosePopupToLevel(0,true);
     panel::g->page = 0; settle(); screenshot(screens/"character.ppm");
-    const auto& striker = named("Striker"); fixture::check(editor::give(*panel::g->draft,catalog,0,striker.definition.definitionHash,1,1050,true,status),"subclass preview setup");
+    const auto& striker = named("Striker"); fixture::check(editor::give(*panel::g->draft,catalog,0,striker.definition.definitionHash,1,105,true,status),"subclass preview setup");
     auto& guardian = panel::character(); guardian.movementAbilityEntry = 4; guardian.grenadeAbilityEntry = 7;
     guardian.superAbilityEntry = striker.paths[0].super; guardian.meleeAbilityEntry = striker.paths[0].melee; guardian.classAbilityEntry = 2;
     panel::g->page = 4; settle(); screenshot(screens/"subclass.ppm");

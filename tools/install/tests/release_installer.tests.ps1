@@ -258,6 +258,112 @@ Copy-Item -LiteralPath "$env:WINDIR\System32\whoami.exe" -Destination (Join-Path
 Expect-Failure { & $installer -GameRoot $game } '*Unsupported Destiny build*'
 Pass 'Wrong executable version is rejected'
 
+$updater = Join-Path $package 'Update-Dawn.ps1'
+Assert-True (Test-Path -LiteralPath $updater) 'Updater is missing from the package'
+$game = New-Game 'preserving-update'
+foreach ($runtime in @('Dawn', 'bin/x64/Dawn')) {
+    foreach ($name in @('settings.json', 'hud.json', 'movement.json', 'player.json')) {
+        if ($name -ne 'settings.json' -or $runtime -ne 'Dawn') {
+            Copy-Item -LiteralPath (Join-Path $package "payload/Dawn/$name") -Destination (Join-Path $game "$runtime/$name")
+        }
+    }
+    [IO.Directory]::CreateDirectory((Join-Path $game "$runtime/cache")) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $game "$runtime/cache/old.bin"), 'stale derived cache')
+    [IO.File]::WriteAllText((Join-Path $game "$runtime/scripts/custom.lua"), 'personal custom mission')
+}
+[IO.Directory]::CreateDirectory((Join-Path $game '.dawn')) | Out-Null
+Write-TestJson (Join-Path $game 'Dawn/hud.json') ([pscustomobject]@{ dawn_card = $true })
+Move-Item -LiteralPath (Join-Path $game 'Dawn/hud.json') -Destination (Join-Path $game 'Dawn/hud-rename.tmp')
+Move-Item -LiteralPath (Join-Path $game 'Dawn/hud-rename.tmp') -Destination (Join-Path $game 'Dawn/HUD.JSON')
+Write-TestJson (Join-Path $game '.dawn/release.json') ([pscustomobject]@{
+    schema = 1; release = '0.1.2'; files = @($manifest.files) + @([pscustomobject]@{ path = 'Dawn/scripts/stale.lua' })
+})
+$before = Snapshot $game
+$personal = @{}
+foreach ($runtime in @('Dawn', 'bin/x64/Dawn')) {
+    foreach ($name in @('player-state.db', 'player-state.db-wal', 'player-state.db-shm', 'player-state.db-journal',
+            'device_identity.key', 'roster_exclude_keys.txt', 'event_music.txt', 'settings.json', 'hud.json', 'movement.json', 'player.json', 'scripts/custom.lua')) {
+        $relative = "$runtime/$name"
+        $personal[$relative] = (Get-FileHash -LiteralPath (Join-Path $game $relative)).Hash
+    }
+}
+$displayBefore = (Get-FileHash -LiteralPath $displayPath).Hash
+& $updater -GameRoot $game -WhatIf
+Assert-True ((Snapshot $game) -ceq $before) 'Update WhatIf changed game files'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $game '.dawn/release-backups'))) 'Update WhatIf created a backup'
+& $updater -GameRoot $game
+foreach ($relative in $personal.Keys) {
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $game $relative)).Hash -eq $personal[$relative]) "Update changed personal data: $relative"
+}
+foreach ($runtime in @('Dawn', 'bin/x64/Dawn')) {
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $game "$runtime/cache"))) 'Update retained stale caches'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $game "$runtime/scripts/stale.lua"))) 'Update retained retired release content'
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $game "$runtime/scripts/omega.lua")).Hash -eq
+        (Get-FileHash -LiteralPath (Join-Path $package 'payload/Dawn/scripts/omega.lua')).Hash) 'Update did not install current mission content'
+}
+Assert-True ((Get-FileHash -LiteralPath $displayPath).Hash -eq $displayBefore) 'Update changed native display/key-binding preferences'
+$state = Get-Content -LiteralPath (Join-Path $game '.dawn/release.json') -Raw | ConvertFrom-Json
+Assert-True ($state.profileMode -eq 'preserve') 'Update receipt does not identify preserved profile'
+$updateJournal = Get-Content -LiteralPath (Join-Path $state.backup 'journal.json') -Raw | ConvertFrom-Json
+Assert-True (@($updateJournal.operations).Count -eq 5) 'Update journal includes an unwanted display operation'
+Assert-True (Test-Path -LiteralPath (Join-Path $state.backup 'previous/Dawn/cache/old.bin')) 'Old cache was not retained in rollback backup'
+$originalProfile = $env:APPDATA
+$env:APPDATA = Join-Path $testRoot 'other-update-user'
+try { & $updater -GameRoot $game -Restore }
+finally { $env:APPDATA = $originalProfile }
+Assert-True ((Snapshot $game) -ceq $before) 'Update rollback did not restore exact original files'
+Assert-True ((Get-FileHash -LiteralPath $displayPath).Hash -eq $displayBefore) 'Update rollback touched display preferences'
+Pass 'Updater preserves separate profiles, WAL/journal files, all settings and custom content; replaces release content and supports exact rollback'
+
+& $updater -GameRoot $game
+[IO.File]::WriteAllText((Join-Path $game 'Dawn/player-state.db'), 'progress after first update')
+& $updater -GameRoot $game
+Assert-True ([IO.File]::ReadAllText((Join-Path $game 'Dawn/player-state.db')) -ceq 'progress after first update') 'Repeated update reset progress'
+Pass 'Repeating an update keeps progress created since the previous update'
+
+$single = Join-Path $testRoot 'single-runtime-update'
+[IO.Directory]::CreateDirectory((Join-Path $single 'bin/x64')) | Out-Null
+New-Item -ItemType HardLink -Path (Join-Path $single 'destiny2.exe') -Target $GameExecutable | Out-Null
+Copy-Item -LiteralPath (Join-Path $game 'Dawn') -Destination (Join-Path $single 'Dawn') -Recurse
+& $updater -GameRoot $single
+Assert-True ((Get-FileHash -LiteralPath (Join-Path $single 'Dawn/player-state.db')).Hash -eq
+    (Get-FileHash -LiteralPath (Join-Path $single 'bin/x64/Dawn/player-state.db')).Hash) 'Single-folder profile was not copied to the missing runtime'
+Pass 'Older single-folder installations carry their profile into both DLL load locations'
+
+$game = New-Game 'failed-preserving-update'
+$before = Snapshot $game
+$lockedFile = [IO.File]::Open((Join-Path $game 'bin/x64/steam_api64.dll'), 'Open', 'ReadWrite', 'None')
+try { Expect-Failure { & $updater -GameRoot $game } '*previous files were restored*' }
+finally { $lockedFile.Dispose() }
+Assert-True ((Snapshot $game) -ceq $before) 'Failed update lost profile data'
+Pass 'Failed update restores the original saves and binaries'
+
+$game = New-Game 'malformed-update-settings'
+[IO.File]::WriteAllText((Join-Path $game 'Dawn/settings.json'), 'broken personal settings')
+$before = Snapshot $game
+Expect-Failure { & $updater -GameRoot $game } '*'
+Assert-True ((Snapshot $game) -ceq $before) 'Malformed settings were replaced during update'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $game '.dawn'))) 'Invalid update created installer state'
+Pass 'Malformed personal settings stop an update before replacement'
+
+$game = Join-Path $testRoot 'missing-update-profile'
+[IO.Directory]::CreateDirectory($game) | Out-Null
+New-Item -ItemType HardLink -Path (Join-Path $game 'destiny2.exe') -Target $GameExecutable | Out-Null
+Expect-Failure { & $updater -GameRoot $game } '*No existing Dawn profile*'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $game '.dawn'))) 'Update without a profile started a fresh installation'
+Pass 'Updater refuses to silently create a fresh profile'
+
+$game = New-Game 'update-downgrade'
+[IO.Directory]::CreateDirectory((Join-Path $game '.dawn')) | Out-Null
+Write-TestJson (Join-Path $game '.dawn/release.json') ([pscustomobject]@{ release = '9.0.0'; files = @() })
+try {
+    $versioned = $manifestText | ConvertFrom-Json
+    $versioned.release = '0.1.3'
+    Write-TestJson $manifestPath $versioned
+    Expect-Failure { & $updater -GameRoot $game } '*will not downgrade*'
+} finally { [IO.File]::WriteAllText($manifestPath, $manifestText, $utf8) }
+Pass 'Updater rejects a known newer installed release'
+
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead($package + '.zip')
 try {

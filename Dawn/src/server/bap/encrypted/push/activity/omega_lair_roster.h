@@ -11,6 +11,7 @@
 #include "../../../../../state/activity/omega_lair_full_roster_catalog.h"
 #include "../../../../../state/activity/omega_ending_rules.h"
 #include "../../../../../state/build_data/scenarios/definition.h"
+#include "native_roster_lifetime_projection.h"
 
 namespace dawn::server::bap::encrypted::push::activity::omega_lair {
 
@@ -24,6 +25,14 @@ inline constexpr std::uint32_t kRegistryTag = 0x80F47979U;
 inline constexpr std::uint32_t kBubbleHash = 0x23345E71U;
 inline constexpr std::size_t kBubble = 14;
 inline constexpr std::size_t kIndexHint = 1076;
+
+/** Slice121 is Lighthouse bubble15, authored state1. Its ending overlay is
+ * applied to the same base services as slice120; asking the ordinary state0
+ * builder for 121 omits the authored HUD root and rejects the terminal packet. */
+[[nodiscard]] constexpr std::int32_t roster_region(std::int32_t region,bool retiring) noexcept {
+    return retiring && region==state::activity::omega_ending::kSlice
+        ? state::activity::omega_ending::kBubble*8 : region;
+}
 
 enum class Admission { unrelated, present, added, noCapacity, missingLayout, missingGroup, conflict };
 enum class Content { reveal, boss, crown };
@@ -329,7 +338,7 @@ template<class Storage>
             std::copy(block.keys.begin(),block.keys.end(),keys.begin());
         }
         storage.rosterSubBlocks[i]={block.bubble,std::span(keys).first(block.keys.size()),
-            std::span(kRetiredKeyPresence).first(block.keys.size())};
+            std::span(kRetiredKeyPresence).first(block.keys.size()),block.states};
     }
     auto& endingKeys=storage.rosterSubBlockKeys[endingBlock];
     if(!hasEnding) { endingKeys[endingCount]=ending::kRegistry; }
@@ -345,6 +354,19 @@ template<class Storage>
         std::span(group.slotFlags).first(1),std::span(group.slotIndices).first(1)};
     roster.groupCount=4;
     return true;
+}
+
+/** Rebind the copied lifetime owner before applying the ending overlay. A
+ * later ordinary projection would restore presence and silently cancel native
+ * cleanup. The retained lifetime value stays unchanged so refresh planning can
+ * still use its ordinary travel rules; retirement is reapplied to every packet. */
+template<class Storage>
+[[nodiscard]] bool finalize_retained_roster(Storage& storage,wire::Snapshot& snapshot,
+    const roster_lifetime::State& lifetimes) noexcept {
+    if(lifetimes.identity.owner
+        && !roster_lifetime::project(lifetimes,snapshot.roster,storage.rosterSubBlocks))return false;
+    return !snapshot.omegaEndingRetire || terminal_roster(storage,snapshot.roster,
+        state::activity::omega_ending::kState);
 }
 
 } // namespace dawn::server::bap::encrypted::push::activity::omega_lair

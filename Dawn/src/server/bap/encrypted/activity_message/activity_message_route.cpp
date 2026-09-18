@@ -639,10 +639,6 @@ void report_sense_update(Session& session, const service::Request& request) noex
         core::settings::get().omegaExperiments.syntheticStageMachine;
     const bool sceneAuthority = syntheticStageMachine
                                 && core::settings::get().omegaExperiments.sceneAuthority;
-    // portal_mutation stands alone: the forest-entrance latch and the native type-7 request
-    // do not need the synthetic stage machine (whose Triggered-stage publications stay
-    // separately gated below).
-    const bool portalMutation = core::settings::get().omegaExperiments.portalMutation;
     const bool epochBound = parsed && session.activityPatchEpochSeen
                             && same_epoch(update.epoch, session.activityPatchEpoch);
     if(handleBound && epochBound && !session.activity.joinedForeignSession && session.activity.lineage
@@ -763,8 +759,9 @@ void report_sense_update(Session& session, const service::Request& request) noex
         }
     }
     const bool opening = parsed && exact_omega_opening(update);
-    const bool forestEntrance = portalMutation && parsed
-                                && exact_omega_forest_entrance(update);
+    // Observing the native entrance advances presentation and Forest readiness.
+    // It does not issue a transport mutation and must not depend on that retired experiment.
+    const bool forestEntrance = parsed && exact_omega_forest_entrance(update);
     bool sceneObservation = false;
     if (sceneAuthority && destinationBound) {
         for (std::size_t index = 0; index < update.objectCount; ++index) {
@@ -799,7 +796,7 @@ void report_sense_update(Session& session, const service::Request& request) noex
         const auto intake = omega_opening_intake::capture(
             session.activity.sensorObservation.omegaOpeningExecutor,
             {session.activity.key.generation.value, sequence, parsed, handleBound,
-                epochBound, destinationBound, portalMutation}, update);
+                epochBound, destinationBound}, update);
         if (intake.queued) { session.activity.keepaliveDueTick = 0; }
         transition = intake.overflow ? "queue_overflow" : intake.queued ? "queued" : "none";
         forestResult = forestEntrance ? transition : "none";

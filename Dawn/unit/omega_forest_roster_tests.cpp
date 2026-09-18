@@ -13,6 +13,7 @@
 #include "server/bap/encrypted/activity_message/omega_roster_readiness.h"
 #include "server/bap/encrypted/activity_message/omega_monitor_edges.h"
 #include "fixtures/omega_ikora_startup_capture.h"
+#include "fixtures/omega_complete_roster_capture.h"
 
 namespace {
 namespace build = dawn::state::build_data;
@@ -201,6 +202,48 @@ void live_ikora_startup() {
     CHECK(!readiness::exact_omega_initial_report(startup));
     scenarios::clear();
 }
+void complete_loading_roster() {
+    namespace readiness = dawn::server::bap::encrypted::activity_message::omega_roster_readiness;
+    namespace sense = dawn::middleware::bap::activity_message::sense_update;
+    auto captured = std::make_unique<sense::SenseUpdate>();
+    auto invalid = std::make_unique<sense::SenseUpdate>();
+    complete_opening_capture::fill(*captured);
+    CHECK(readiness::exact_omega_initial_report(*captured));
+    for (std::size_t i = 0; i < captured->rosterEntryCount; ++i) {
+        *invalid = *captured; invalid->rosterEntries[i].registryKey ^= 1U;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+        *invalid = *captured; ++invalid->rosterEntries[i].bubble;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+        *invalid = *captured; invalid->rosterEntries[i].active = false;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+        *invalid = *captured; invalid->rosterEntries[i].state = 0x82;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+        *invalid = *captured;
+        invalid->rosterEntries[i] = captured->rosterEntries[(i + 1) % captured->rosterEntryCount];
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+        *invalid = *captured;
+        std::move(invalid->rosterEntries.begin() + i + 1,
+            invalid->rosterEntries.begin() + invalid->rosterEntryCount,
+            invalid->rosterEntries.begin() + i);
+        --invalid->rosterEntryCount;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+    }
+    for (std::size_t i = 0; i < captured->objectCount; ++i) {
+        *invalid = *captured; invalid->objects[i].bodyFirst ^= 1U;
+        CHECK(!readiness::exact_omega_initial_report(*invalid));
+    }
+    *invalid = *captured; invalid->bubbleBlockCount = 3;
+    CHECK(!readiness::exact_omega_initial_report(*invalid));
+    *invalid = *captured; invalid->topLevelRosterCount = 4;
+    CHECK(!readiness::exact_omega_initial_report(*invalid));
+    *invalid = *captured; invalid->rosterEntries[invalid->rosterEntryCount++] = {0xDEADBEEFU, 12, 0x83, true};
+    CHECK(!readiness::exact_omega_initial_report(*invalid));
+    // The added area groups may be reported after the Lair block as well.
+    *invalid = *captured;
+    std::rotate(invalid->rosterEntries.begin() + 4, invalid->rosterEntries.begin() + 6,
+        invalid->rosterEntries.begin() + invalid->rosterEntryCount);
+    CHECK(readiness::exact_omega_initial_report(*invalid));
+}
 } // namespace
 
 // Same readiness predicate as the catalog runtime, without unrelated domain publishers.
@@ -215,6 +258,7 @@ int main() {
     shifted_catalog_and_replacement();
     missing_group_and_full_layout();
     live_ikora_startup();
+    complete_loading_roster();
     if (g_failures != 0) {
         std::cerr << g_failures << " checks failed\n";
         return 1;

@@ -41,7 +41,23 @@ bool stage_service_outcome(Scratch& scratch,
                                          armsBannerRepush);
         bannerRoot = outcome.subscription.familyRootSoid;
     } else if (outcome.hasUnsubscription) {
-        stage_unsubscription(before, outcome.unsubscription.familyRootSoid, after);
+        const auto& request = outcome.unsubscription;
+        stage_unsubscription(before, request.familyType, request.familyRootSoid, after);
+        if (request.familyType == kAccountFamilyType) {
+            publication.cancelFamily4RepushRoot = request.familyRootSoid;
+            publication.releasedFamily4 = before.family4Active && !after.family4Active;
+        } else if (request.familyType == kBannerFamilyType) {
+            publication.cancelBannerRepushRoot = request.familyRootSoid;
+        }
+        core::log::writef(core::log::Channel::server, core::log::Level::info,
+                         "ev=queuez stage=unsubscribe family=%u root=0x%llX "
+                         "family4_before=%u family4_after=%u residents_before=%u residents_after=%u",
+                         static_cast<unsigned>(request.familyType),
+                         static_cast<unsigned long long>(request.familyRootSoid),
+                         static_cast<unsigned>(before.family4Active),
+                         static_cast<unsigned>(after.family4Active),
+                         static_cast<unsigned>(before.family4ResidentCount),
+                         static_cast<unsigned>(after.family4ResidentCount));
     } else if (outcome.hasChangeCharacter) {
         // The reply already carries the version this patch promises. A patch that cannot be built
         // leaves the ladder where it is, instead of holding back that reply.

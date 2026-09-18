@@ -364,6 +364,8 @@ publish_scenario_layouts(std::span<const scenarios::Definition> definitions,
  */
 [[nodiscard]] bool find_roster_group(std::size_t index, scenarios::RosterGroup& group) noexcept;
 [[nodiscard]] bool find_roster_group_by_key(std::uint32_t key, scenarios::RosterGroup& group) noexcept;
+/** Mission-scoped identity lookup; shared registry keys are disambiguated by object tag. */
+[[nodiscard]] bool find_roster_group_by_key(std::uint32_t key, std::uint32_t objectTag, scenarios::RosterGroup& group) noexcept;
 
 /** @return Number of published destination layouts, read under the lock. */
 [[nodiscard]] std::size_t scenario_layout_count() noexcept;

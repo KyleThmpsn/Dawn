@@ -45,6 +45,7 @@
 #include "activity_region_snapshot.h"
 #include "internal.h"
 #include "omega_lair_roster.h"
+#include "omega_opening_publication.h"
 #include "gateway_roster.h"
 #include "deadly_trial_roster.h"
 #include "beyond_infinity_roster.h"
@@ -838,13 +839,16 @@ RosterOutcome build_roster_snapshot(Session& session,
         return RosterOutcome::noLayout;
     }
     if(beyondPrepared && !beyond_infinity_roster::prepare_layout(layout,
+        [](std::uint32_t key,std::uint32_t tag,std::uint16_t& index) noexcept { return layouts::find_group_index(key,tag,index); },
         [](std::size_t index,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group(index,group); })) { return RosterOutcome::noGroups; }
     if(deepPrepared && !deep_storage_roster::prepare_layout(layout,
+        [](std::uint32_t key,std::uint32_t tag,std::uint16_t& index) noexcept { return layouts::find_group_index(key,tag,index); },
         [](std::size_t index,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group(index,group); })) { return RosterOutcome::noGroups; }
     if(hijackedPrepared && !hijacked_roster::prepare_layout(layout,
         [](std::uint32_t key,std::uint16_t& index) noexcept { return layouts::find_group_index(key,index); },
         [](std::size_t index,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group(index,group); })) { return RosterOutcome::noGroups; }
     if(trialPrepared && !deadly_trial_roster::prepare_layout(layout,
+        [](std::uint32_t key,std::uint32_t tag,std::uint16_t& index) noexcept { return layouts::find_group_index(key,tag,index); },
         [](std::size_t index,layouts::RosterGroup& group) noexcept {
             return state::build_data::find_roster_group(index,group);
         })) { return RosterOutcome::noGroups; }
@@ -882,7 +886,8 @@ RosterOutcome build_roster_snapshot(Session& session,
         return RosterOutcome::noGroups;
     }
     if (inputs.regionIndex < 0
-        || !fill_roster(layout, scratch, snapshot.roster, inputs.regionIndex)) {
+        || !fill_roster(layout, scratch, snapshot.roster,
+            omega_lair::roster_region(inputs.regionIndex,snapshot.omegaEndingRetire))) {
         return RosterOutcome::noGroups;
     }
     namespace vendorWorld=state::activity::vendors::presentation;
@@ -1003,8 +1008,8 @@ RosterOutcome build_roster_snapshot(Session& session,
     if(gatewayPrepared) {
         std::uint32_t failedKey{};
         const bool admitted=gateway_roster::admit(layout,scratch,snapshot.roster,
-            [](std::size_t index,layouts::RosterGroup& group) noexcept {
-                return state::build_data::find_roster_group(index,group);
+            [](std::uint32_t key,std::uint32_t tag,layouts::RosterGroup& group) noexcept {
+                return state::build_data::find_roster_group_by_key(key,tag,group);
             },&failedKey);
         const auto gatewayRun=state::activity::mission_run_generation();
         static std::atomic_uint64_t lastGatewayAdmission{UINT64_MAX};
@@ -1028,8 +1033,8 @@ RosterOutcome build_roster_snapshot(Session& session,
     if(trialPrepared) {
         std::uint32_t failedKey{};
         const bool admitted=deadly_trial_roster::admit(layout,scratch,snapshot.roster,
-            [](std::size_t index,layouts::RosterGroup& group) noexcept {
-                return state::build_data::find_roster_group(index,group);
+            [](std::uint32_t key,std::uint32_t tag,layouts::RosterGroup& group) noexcept {
+                return state::build_data::find_roster_group_by_key(key,tag,group);
             },&failedKey);
         const auto deadly_trialRun=state::activity::mission_run_generation();
         static std::atomic_uint64_t lastDeadlyTrialAdmission{UINT64_MAX};
@@ -1053,7 +1058,7 @@ RosterOutcome build_roster_snapshot(Session& session,
     if(beyondPrepared) {
         std::uint32_t failedKey{};
         const bool admitted=beyond_infinity_roster::admit(layout,scratch,snapshot.roster,
-            [](std::size_t index,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group(index,group); },&failedKey);
+            [](std::uint32_t key,std::uint32_t tag,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group_by_key(key,tag,group); },&failedKey);
         if(!admitted) {
             std::array<char,160> line{};std::snprintf(line.data(),line.size(),"ev=beyond_infinity stage=roster result=failed registry=%08X",failedKey);
             core::log::write(core::log::Channel::server,core::log::Level::error,line.data());return RosterOutcome::noGroups;
@@ -1070,7 +1075,7 @@ RosterOutcome build_roster_snapshot(Session& session,
     if(deepPrepared) {
         std::uint32_t failedKey{};
         const bool admitted=deep_storage_roster::admit(layout,scratch,snapshot.roster,
-            [](std::size_t index,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group(index,group); },&failedKey);
+            [](std::uint32_t key,std::uint32_t tag,layouts::RosterGroup& group) noexcept { return state::build_data::find_roster_group_by_key(key,tag,group); },&failedKey);
         if(!admitted) {
             std::array<char,160> line{};std::snprintf(line.data(),line.size(),"ev=deep_storage stage=roster result=failed registry=%08X",failedKey);
             core::log::write(core::log::Channel::server,core::log::Level::error,line.data());return RosterOutcome::noGroups;
@@ -1246,7 +1251,7 @@ RosterOutcome build_roster_snapshot(Session& session,
     if(launchpadPrepared) {
         std::uint32_t failedKey{};
         if(!launchpad_roster::admit(layout,scratch,snapshot.roster,
-            [](std::size_t index,layouts::RosterGroup& group) noexcept {return state::build_data::find_roster_group(index,group);},failedKey)) {
+            [](std::uint32_t key,std::uint32_t tag,layouts::RosterGroup& group) noexcept {return state::build_data::find_roster_group_by_key(key,tag,group);},failedKey)) {
             std::array<char,128> line{};std::snprintf(line.data(),line.size(),"ev=launchpad stage=roster result=failed registry=%08X",failedKey);
             core::log::write(core::log::Channel::server,core::log::Level::error,line.data());return RosterOutcome::noGroups;
         }
@@ -1454,10 +1459,6 @@ RosterOutcome build_roster_snapshot(Session& session,
         }
     }
     if(snapshot.omegaEndingRetire) {
-        if(!omega_lair::terminal_roster(scratch,snapshot.roster,
-            state::activity::omega_ending::kState)) {
-            return RosterOutcome::noGroups;
-        }
         snapshot.omegaPortalEntry=false;
         snapshot.omegaForestGenerator=false;
         snapshot.omegaOpeningStage=message::kOmegaOpeningStageNone;
@@ -1621,8 +1622,8 @@ RosterOutcome build_roster_snapshot(Session& session,
         state::activity::forced::mission_host_reestablishment_enabled();
     snapshot.phaseOneOnly = openingDestination && !session.activity.joinedForeignSession
                             && session.activity.rosterSends == 0;
-    // Keep sending the complete initialization until the client's post-apply observer proves type
-    // 18 was actually constructed. Only that acknowledgement can transfer ownership to the native
+    // Keep sending the complete initialization until the client's native arrival observer proves
+    // mission storage was constructed. Only that acknowledgement transfers ownership to the native
     // simulation: a server send can arrive before the authority manager is ready and be discarded.
     const bool authorityRuntimeInitialized =
         syntheticOmega && state::activity::mission_authority_runtime_initialized();
@@ -1638,36 +1639,22 @@ RosterOutcome build_roster_snapshot(Session& session,
     // instantiated almost immediately when the world became available and the whole preroll was
     // skipped. WorldPhase::arrived is the exact activity:in_world observation; unlike the retained
     // mission_seed_armed latch it also pauses the opening during any later slice transition.
+    const bool openingArrived = state::activity::world_phase() == state::activity::WorldPhase::arrived;
+    const bool openingSeedArmed = state::activity::mission_seed_armed();
     const bool openingEligible =
         syntheticOmega && authorityRuntimeInitialized
         && session.activity.sensorObservation.omegaRosterReady
-        && state::activity::world_phase() == state::activity::WorldPhase::arrived
-        && state::activity::mission_seed_armed();
-    bool forcedOmegaSeed = false;
-    if (openingEligible) {
+        && openingArrived && openingSeedArmed;
+    const auto openingStageBefore = session.activity.omegaOpeningStage;
+    const bool forcedOmegaSeed = omega_opening_publication::bootstrap(
+        snapshot, session.activity.omegaOpeningStage, openingEligible, inputs.regionIndex,
+        session.activity.sensorObservation.omegaForestEntranceTriggered);
+    if (openingEligible && !forcedOmegaSeed) {
         const std::uint8_t previous = session.activity.omegaOpeningStage;
-        if (previous == message::kOmegaOpeningStageNone
-            && session.activity.sensorObservation.omegaOpeningTriggered) {
-            // The player begins inside BA5F's authored Lighthouse/Ghost volume. Hold the Ikora
-            // Scene at None until the later D001 approach edge arrives, preserving retail's
-            // arrival -> Ghost VO -> approach -> vignette order.
-            forcedOmegaSeed = true;
-            snapshot.initializeMissionAuthorityRuntime = true;
-            session.activity.omegaOpeningStage = message::kOmegaOpeningStageBaseline;
-        } else if (previous == message::kOmegaOpeningStageBaseline
-                   && snapshot.omegaSceneAuthority
-                   && message::kOmegaSceneAuthorityBodyReady) {
-            forcedOmegaSeed = true;
-            snapshot.omegaOpeningStage = message::kOmegaOpeningStageScene;
-            session.activity.omegaOpeningStage = message::kOmegaOpeningStageScene;
-        } else if (previous == message::kOmegaOpeningStageScene) {
-            forcedOmegaSeed = true;
-            snapshot.omegaOpeningStage = message::kOmegaOpeningStageReady;
-            session.activity.omegaOpeningStage = message::kOmegaOpeningStageReady;
-        } else if (previous == message::kOmegaOpeningStageReady
+        if (previous == message::kOmegaOpeningStageReady
                    && session.activity.sensorObservation.omegaSceneHandoffArmed
                    && !session.activity.sensorObservation.omegaOpeningAuthorityPublished) {
-            // The approach edge started state 1; the exact type43/1 handoff is the next authored
+            // Arrival started state 1; the exact type43/1 handoff is the next authored
             // boundary. Reusing the already-latched approach bit here advanced straight through
             // state 2 and skipped the Ikora vignette's natural dwell.
             snapshot.omegaOpeningStage = message::kOmegaOpeningStageTriggered;
@@ -1717,6 +1704,30 @@ RosterOutcome build_roster_snapshot(Session& session,
             snapshot.omegaOpeningStage = message::kOmegaForestStageSettled;
         } else if (previous >= message::kOmegaOpeningStageSettled) {
             snapshot.omegaOpeningStage = message::kOmegaOpeningStageSettled;
+        }
+    }
+    if (syntheticOmega) {
+        // Emit only changes in the publication gates. An accepted approach receipt alone does
+        // not prove that a scene body was sent; retain the exact blocked prerequisite in logs.
+        static std::atomic_uint64_t lastOpeningTrace{UINT64_MAX};
+        const std::uint64_t trace = (state::activity::mission_run_generation() << 16U)
+            | (std::uint64_t{session.activity.omegaOpeningStage} << 8U)
+            | (authorityRuntimeInitialized ? 1U : 0U)
+            | (session.activity.sensorObservation.omegaRosterReady ? 2U : 0U)
+            | (openingArrived ? 4U : 0U) | (openingSeedArmed ? 8U : 0U)
+            | (session.activity.sensorObservation.omegaOpeningTriggered ? 16U : 0U);
+        if (lastOpeningTrace.exchange(trace, std::memory_order_relaxed) != trace) {
+            std::array<char, 352> line{};
+            std::snprintf(line.data(), line.size(),
+                "ev=omega_opening_publication eligible=%u runtime_ready=%u roster_ready=%u "
+                "arrived=%u seed_armed=%u approach=%u stage_before=%u stage_after=%u",
+                openingEligible ? 1U : 0U, authorityRuntimeInitialized ? 1U : 0U,
+                session.activity.sensorObservation.omegaRosterReady ? 1U : 0U,
+                openingArrived ? 1U : 0U, openingSeedArmed ? 1U : 0U,
+                session.activity.sensorObservation.omegaOpeningTriggered ? 1U : 0U,
+                static_cast<unsigned>(openingStageBefore),
+                static_cast<unsigned>(session.activity.omegaOpeningStage));
+            core::log::write(core::log::Channel::server, core::log::Level::info, line.data());
         }
     }
     snapshot.publishOmegaOpeningTransition =
@@ -1880,7 +1891,12 @@ RosterOutcome build_roster_snapshot(Session& session,
     // empty reset block in phase two can seed a new sync record after cleanup.
     if(snapshot.launchpad.enabled && snapshot.launchpad.cinematic.retiring()) {snapshot.phaseOneOnly=true;}
     const auto folded = fold_groups(snapshot.roster);
-    const bool retainOrdinals = towerVendors || (nativeProfile && nativeProfile->retainRosterOrdinals);
+    // Omega's region 120 -> 88 transition drops three Lighthouse groups from
+    // the desired view. A shared generation bump destroys the unchanged global
+    // script, participation and HUD objects after native ownership has begun.
+    // Keep each existing key's ordinal and generation across streamed regions.
+    const bool retainOrdinals = syntheticOmega || towerVendors
+        || (nativeProfile && nativeProfile->retainRosterOrdinals);
     const bool warmup = session.activity.rosterSends < kWarmupSends;
     if (retainOrdinals && !warmup) session.activity.rosterGroups = folded;
     snapshot.stateSequence = next_state_sequence(session, folded, burst);
@@ -1921,6 +1937,28 @@ RosterOutcome build_roster_snapshot(Session& session,
         }
     } else if (session.activity.rosterLifetimes.identity.owner) {
         session.activity.rosterLifetimes = {};
+    }
+    // Apply Omega's persistent terminal tombstones to the retained ordering.
+    // The ending owns this explicit retirement through transit; the ordinary
+    // lifetime planner must not treat dormant-bubble removals as travel updates.
+    if(snapshot.omegaEndingRetire
+        && !omega_lair::terminal_roster(scratch,snapshot.roster,
+            state::activity::omega_ending::kState)) {
+        return RosterOutcome::noGroups;
+    }
+    if(syntheticOmega) {
+        static std::atomic_uint64_t previous{UINT64_MAX};
+        const auto trace=(state::activity::mission_run_generation()<<32U)
+            | (std::uint64_t{static_cast<std::uint32_t>(inputs.regionIndex)}<<16U)
+            | (std::uint64_t{snapshot.stateSequence}<<8U)
+            | (snapshot.omegaEndingRetire?1U:0U);
+        if(previous.exchange(trace,std::memory_order_relaxed)!=trace) {
+            core::log::writef(core::log::Channel::server,core::log::Level::info,
+                "ev=omega_roster_lifetime region=%d state=%u groups=%zu retained_globals=%zu retained_bubbles=%zu ending=%u",
+                inputs.regionIndex,static_cast<unsigned>(snapshot.stateSequence),snapshot.roster.groupCount,
+                snapshot.roster.topLevelKeys.size(),snapshot.roster.bubbleSubBlocks.size(),
+                snapshot.omegaEndingRetire?1U:0U);
+        }
     }
     return RosterOutcome::published;
 }
@@ -2094,9 +2132,8 @@ namespace {
     }
     snapshot.before = delivery_of(session.activity);
     snapshot.after = delivery_of(candidate.activity);
-    if (snapshot.after.lifetimes.identity.owner
-        && !roster_lifetime::project(snapshot.after.lifetimes, snapshot.rosterWire.roster,
-            scratch.rosterSubBlocks)) return false;
+    if (!omega_lair::finalize_retained_roster(scratch,snapshot.rosterWire,
+            snapshot.after.lifetimes)) return false;
     if (!lifecycle::stage_roster_publication_generation(session.activity,
                                                         snapshot.rosterPublication)) {
         return false;

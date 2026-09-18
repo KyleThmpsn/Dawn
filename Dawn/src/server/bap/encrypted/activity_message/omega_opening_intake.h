@@ -8,7 +8,7 @@ namespace opening = state::activity::coo::omega::opening;
 namespace sense = middleware::bap::activity_message::sense_update;
 struct Context final {
     std::uint64_t binding{}, packet{};
-    bool parsed{}, handleBound{}, epochBound{}, destinationBound{}, portalMutation{};
+    bool parsed{}, handleBound{}, epochBound{}, destinationBound{};
 };
 struct Result final { bool queued{}, overflow{}; };
 
@@ -38,7 +38,7 @@ struct Result final { bool queued{}, overflow{}; };
             put(opening::scene_receipt(context.binding, context.packet, scene));
         }
     }
-    if (context.portalMutation && omega_monitor_edges::entered(update, 24)) {
+    if (omega_monitor_edges::entered(update, 24)) {
         edge(opening::Kind::entrance);
     }
     return result;

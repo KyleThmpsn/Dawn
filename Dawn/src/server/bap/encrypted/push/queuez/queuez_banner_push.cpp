@@ -204,6 +204,7 @@ bool append_banner_notification(Scratch& scratch,
         state::account::banner_character_soid(state::account_snapshot());
     if (!after.family0Active && delivered != 0) {
         after.family0Active = true;
+        after.family0RootSoid = familyRootSoid;
         after.family0Character = delivered;
         after.family0Version = queuez::kInitialFamilyVersion;
     }
@@ -244,7 +245,7 @@ bool append_banner_move_notification(Scratch& scratch,
     // A family zero with no first delivery yet has no ladder to move, and no root to name it with.
     const char* reason = nullptr;
     if (!queuez::stage_family0_subscription(
-            before, selectedCharacter, publish, incremental, after)) {
+            before, before.family4RootSoid, selectedCharacter, publish, incremental, after)) {
         reason = "stage";
     } else if (before.family4RootSoid == 0) {
         reason = "no_root";

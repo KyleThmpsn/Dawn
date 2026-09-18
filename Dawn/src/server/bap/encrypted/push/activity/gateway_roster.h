@@ -40,8 +40,8 @@ namespace wire=middleware::bap::activity_message::sensor_auth_update;
 }
 // The caller discards the entire scratch snapshot on failure. No cache mutation,
 // no pointers to temporary storage, and no group changes at encounter boundaries.
-template<class Storage,class FindGroup>
-[[nodiscard]] bool admit(const layouts::Definition& layout,Storage& storage,wire::Roster& roster,FindGroup find,std::uint32_t* failedKey=nullptr) noexcept {
+template<class Storage,class FindGroupByKey>
+[[nodiscard]] bool admit(const layouts::Definition& layout,Storage& storage,wire::Roster& roster,FindGroupByKey findByKey,std::uint32_t* failedKey=nullptr) noexcept {
     if(failedKey) { *failedKey=0; }
     if(layout.tag!=native::kScenario || layout.nameLength>layout.name.size()
         || std::string_view(layout.name.data(),layout.nameLength)!="mission_abs"
@@ -62,12 +62,7 @@ template<class Storage,class FindGroup>
         // another published group's spans. The temporary never escapes.
         layouts::RosterGroup check{};
         auto& group=count?check:storage.rosterGroups[roster.groupCount];
-        bool resolved=find(expected.hint,group) && matches(group,expected);
-        for(std::size_t i=0;!resolved && i<layouts::kRosterGroupCapacity;++i) {
-            if(!find(i,group)) { break; }
-            resolved=matches(group,expected);
-        }
-        if(!resolved) { return false; }
+        if(!findByKey(expected.key,expected.tag,group) || !matches(group,expected)) { return false; }
         std::size_t block=roster.bubbleSubBlocks.size();unsigned keys{},blocks{};
         for(std::size_t i=0;i<roster.bubbleSubBlocks.size();++i) {
             const auto& b=roster.bubbleSubBlocks[i];

@@ -58,8 +58,9 @@ void roster_tests() {
             std::span(dest.slotFlags).first(dest.slotCount),std::span(dest.slotIndices).first(dest.slotCount)};
     }
     roster.topLevelGroupCount=roster.groupCount;
-    const auto lookup=[&](std::size_t index,r::layouts::RosterGroup& out) noexcept {
-        if(index>=cache->size()) { return false; }out=(*cache)[cache->size()-1-index];return true;
+    const auto lookup=[&](std::uint32_t key,std::uint32_t tag,r::layouts::RosterGroup& out) noexcept {
+        for(const auto& row:*cache) if(row.registryKey==key && row.objectTag==tag) {out=row;return true;}
+        return false;
     };
     CHECK(r::admit(layout,*storage,roster,lookup));CHECK(roster.groupCount==std::size(g::kGroups));
     const auto count=roster.groupCount,keys=roster.bubbleSubBlocks[0].keys.size();

@@ -8,6 +8,7 @@
 #include "client/hooking/call_gate.h"
 #include "client/hooks/bootflow/spawn_hold_policy.h"
 #include "state/activity/tower_spawn_recovery.h"
+#include "state/activity/runtime.h"
 
 namespace {
 
@@ -408,6 +409,57 @@ void tower_recovery_requires_rebuilt_uninitialized_world() {
     watch.reset();CHECK(!watch.observe(o,20000));CHECK(!watch.observe(o,25000));
 }
 
+void omega_runtime_arrival_witness() {
+    namespace activity = dawn::state::activity;
+    // Captured from the failed live run at t=108781: the native runtime existed,
+    // but only a detached legacy post-apply probe could acknowledge it.
+    const policy::OmegaRuntimeReadiness captured{
+        true, policy::Phase::arrived, true, true, 3, true, true, true,
+        0x64F90002U, 0x4AF90001U, 0x80809917U, 0x808099BDU, 0, 0};
+    CHECK(policy::omega_runtime_ready(captured));
+    for (unsigned missing = 0; missing < 6; ++missing) {
+        auto value = captured;
+        switch (missing) {
+        case 0: value.selected = false; break;
+        case 1: value.playerReady = false; break;
+        case 2: value.worldReadable = false; break;
+        case 3: value.localReady = false; break;
+        case 4: value.scriptFound = false; break;
+        case 5: value.directorFound = false; break;
+        }
+        CHECK(!policy::omega_runtime_ready(value));
+    }
+    for (auto phase : {policy::Phase::idle, policy::Phase::transitioning}) {
+        auto value = captured; value.phase = phase;
+        CHECK(!policy::omega_runtime_ready(value));
+    }
+    for (int world : {-1, 0, 1, 2, 4}) {
+        auto value = captured; value.worldState = world;
+        CHECK(!policy::omega_runtime_ready(value));
+    }
+    for (unsigned invalid = 0; invalid < 6; ++invalid) {
+        auto value = captured;
+        switch (invalid) {
+        case 0: value.scriptDatum = UINT32_MAX; break;
+        case 1: value.directorDatum = UINT32_MAX; break;
+        case 2: value.scriptComponent = 0x80809919U; break; // Schema is not a runtime.
+        case 3: value.directorComponent = 0x808099BFU; break;
+        case 4: value.scriptOffset = 8; break;
+        case 5: value.directorOffset = 8; break;
+        }
+        CHECK(!policy::omega_runtime_ready(value));
+    }
+    activity::reset_mission_authority_runtime_initialization();
+    CHECK(!activity::mission_authority_runtime_initialized());
+    if (policy::omega_runtime_ready(captured)) {
+        CHECK(activity::acknowledge_mission_authority_runtime_initialized());
+    }
+    CHECK(activity::mission_authority_runtime_initialized());
+    CHECK(!activity::acknowledge_mission_authority_runtime_initialized());
+    activity::reset_mission_authority_runtime_initialization();
+    CHECK(!activity::mission_authority_runtime_initialized());
+}
+
 void generic_quiesced_call_forwards_without_side_effects() {
     reset_native_barrier();
     GenericCallGateForwarder forwarder{};
@@ -453,6 +505,7 @@ int main() {
     patrol_fast_travel_rearms_without_a_boot_transition();
     patrol_arrival_sequences();
     tower_recovery_requires_rebuilt_uninitialized_world();
+    omega_runtime_arrival_witness();
     generic_publication_window_waits_then_forwards_exactly_once();
     generic_quiesced_call_forwards_without_side_effects();
     generic_active_call_stays_owned_through_native_interval();

@@ -43,6 +43,7 @@ namespace dawn::server::bap::encrypted::queuez {
  * @return True when the request is canonical for the current state.
  */
 [[nodiscard]] bool stage_family0_subscription(const SessionState& before,
+                                              std::uint64_t familyRootSoid,
                                               std::uint64_t selectedCharacter,
                                               bool& publish,
                                               bool& incremental,
@@ -193,8 +194,9 @@ namespace dawn::server::bap::encrypted::queuez {
                                         bool updatesAccount,
                                         ItemDismantle& dismantle) noexcept;
 
-/** Clears state for the active root. Zero or another root leaves the state unchanged. */
+/** Releases only the named family/root. Other subscriptions retain their versions and residents. */
 void stage_unsubscription(const SessionState& before,
+                          std::uint8_t familyType,
                           std::uint64_t familyRootSoid,
                           SessionState& after) noexcept;
 
