@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 
 namespace dawn::middleware::bap::activity_message::native::generic_device {
 // Exact-build80805063: producerDF4020, consumerDF6510, reflection3909B08.
