@@ -6,6 +6,7 @@
 #include "middleware/encoding/bit_writer.h"
 #include "fixtures/coo_opening_accepted_capture.h"
 #include "fixtures/coo_opening_legacy_policy.h"
+#include "fixtures/omega_complete_roster_capture.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -49,7 +50,7 @@ sense::SenseUpdate decode(std::size_t index) {
     CHECK(consumed <= data.size() * 8);
     return update;
 }
-intake::Context context(std::uint64_t packet) { return {7, packet, true, true, true, true, true}; }
+intake::Context context(std::uint64_t packet) { return {7, packet, true, true, true, true}; }
 
 wire::Snapshot snapshot(const Observer& state, bool executor, bool quiesced, bool seed, int region) {
     wire::Snapshot result{};
@@ -124,6 +125,41 @@ void captured_replay(unsigned batch) {
     CHECK(actual.omegaOpeningExecutor.authority().released);
     CHECK(actual.omegaOpeningExecutor.authority().entrance);
     CHECK(actual.omegaOpeningExecutor.diagnostics().phase == coo::Phase::complete);
+}
+
+void complete_loading_roster() {
+    sense::SenseUpdate roster{};
+    complete_opening_capture::fill(roster);
+    const auto approach = decode(9);
+    for (unsigned rejectedGate = 0; rejectedGate < 5; ++rejectedGate) {
+        Observer actual;
+        auto c = context(1);
+        if (rejectedGate == 1) c.destinationBound = false;
+        if (rejectedGate == 2) c.handleBound = false;
+        if (rejectedGate == 3) c.epochBound = false;
+        if (rejectedGate == 4) c.parsed = false;
+        CHECK(!intake::capture(actual.omegaOpeningExecutor, c, roster).overflow);
+        static_cast<void>(opening::update_observer(actual, 7));
+        CHECK(actual.omegaRosterReady == (rejectedGate == 0));
+        CHECK(!actual.omegaOpeningTriggered);
+        CHECK(!intake::capture(actual.omegaOpeningExecutor, context(2), approach).overflow);
+        static_cast<void>(opening::update_observer(actual, 7));
+        CHECK(actual.omegaOpeningTriggered == (rejectedGate == 0));
+        wire::Snapshot projected{};
+        projected.omegaSceneAuthority = true;
+        opening::project(actual.omegaOpeningExecutor, projected);
+        CHECK(projected.omegaIkoraPortalRequested == (rejectedGate == 0));
+        CHECK(!projected.omegaIkoraLatticeReleased);
+        // The same 30/24 packet was decoded but ignored in the failing installed
+        // run (t=134407). Native entrance observation has no experiment switch.
+        const auto entrance = decode(35);
+        CHECK(!intake::capture(actual.omegaOpeningExecutor, context(3), entrance).overflow);
+        static_cast<void>(opening::update_observer(actual, 7));
+        CHECK(actual.omegaForestEntranceTriggered == (rejectedGate == 0));
+        const auto forest = snapshot(actual, true, false, true, 120);
+        CHECK(forest.omegaForestBanner == (rejectedGate == 0));
+        CHECK(forest.omegaForestGenerator == (rejectedGate == 0));
+    }
 }
 
 void adversarial_receipts() {
@@ -323,6 +359,7 @@ int main(int argc, char**) {
     if (argc > 1) { return guarded_session_reset(); }
     CHECK(guarded_session_reset() == 0);
     captured_replay(1); captured_replay(7); captured_replay(40);
+    complete_loading_roster();
     adversarial_receipts(); coalesced_and_retry(); queue_lifetimes();
     std::printf("PASS: %u checks; %u authority bodies; 40 captured opening packets at 3 update cadences, reset/direct-start/stale/overflow and 3 production secure-reset lifecycles\n", checks, bodies);
 }

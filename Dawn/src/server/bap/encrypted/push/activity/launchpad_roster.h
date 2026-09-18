@@ -47,9 +47,7 @@ bool admit(const layouts::Definition& layout,Storage& storage,wire::Roster& rost
         auto& group=storage.rosterGroups[roster.groupCount];
         if(expected.hint==UINT32_MAX) {recovered(group,expected);}
         else {
-            bool resolved=find(expected.hint,group) && matches(group,expected);
-            for(std::size_t i=0;!resolved && i<layouts::kRosterGroupCapacity;++i) {if(!find(i,group)) {break;}resolved=matches(group,expected);}
-            if(!resolved) {return false;}
+            if(!find(expected.key,expected.tag,group) || !matches(group,expected)) {return false;}
         }
         roster.groups[roster.groupCount++]={group.registryKey,std::span(group.slotTypes).first(group.slotCount),std::span(group.slotFlags).first(group.slotCount),std::span(group.slotIndices).first(group.slotCount)};
         if(top) {++roster.topLevelGroupCount;}

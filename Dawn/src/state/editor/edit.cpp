@@ -22,7 +22,26 @@ void sum(Stats& into, const Stats& values, int sign = 1) {
 bool nonzero(const Stats& values) { return std::any_of(values.begin(), values.end(), [](int v) { return v != 0; }); }
 bool bump(CharacterState& character, Item& item) {
     if (character.nextInventorySerial >= static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)())) return false;
-    item.mutationSerial = static_cast<std::int32_t>(++character.nextInventorySerial);
+    // The character wire record requires every item revision to be strictly below next.
+    item.mutationSerial = static_cast<std::int32_t>(character.nextInventorySerial++);
+    return true;
+}
+bool prepare_serial_counter(CharacterState& character) {
+    auto next = character.nextInventorySerial;
+    std::uint32_t count = 0;
+    const auto include = [&](const Item& item) {
+        ++count;
+        if (item.mutationSerial < 0 || item.mutationSerial == INT32_MAX) return false;
+        next = (std::max)(next, static_cast<std::uint32_t>(item.mutationSerial) + 1U);
+        return true;
+    };
+    for (const auto& item : character.equipment.slots) if (item && !include(*item)) return false;
+    for (std::size_t i = 0; i < character.inventory.count; ++i)
+        if (!include(character.inventory.values[i])) return false;
+    next = (std::max)(next, count);
+    if (next > static_cast<std::uint32_t>(INT32_MAX)) return false;
+    // Repair drafts loaded from the old editor without rewriting any item or revision.
+    character.nextInventorySerial = next;
     return true;
 }
 bool exotic_conflict(const CharacterState& character, const CatalogItem& item, const Catalog& catalog) {
@@ -148,7 +167,7 @@ bool adjust_stats(Item& item, const Catalog& catalog, const Stats& targets, Stat
 }
 bool give(Draft& draft, const Catalog& catalog, std::size_t characterIndex, std::uint32_t hash, int quantity, int power, bool shouldEquip, std::string& error) {
     const auto* definition = catalog.find(hash);
-    if (characterIndex >= draft.after.characterCount || !definition || quantity <= 0 || power < 0 || power > 9999) { error = "Choose a valid item, quantity and power."; return false; }
+    if (characterIndex >= draft.after.characterCount || !definition || quantity <= 0 || power < 0 || power > kMaximumItemLevel) { error = "Choose a valid item, quantity and item level (0-106)."; return false; }
     auto staged = std::make_unique<AccountState>(draft.after);
     auto& character = staged->characters[characterIndex];
     build_data::inventory::buckets::Descriptor bucket{};
@@ -197,6 +216,7 @@ bool unequip(Draft& draft, const Catalog&, std::size_t character, std::size_t sl
     error = "Moved to inventory in draft."; return true;
 }
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const std::array<bool, 16>& slots, int power, std::mt19937& random, std::string& error) {
+    if (power < 0 || power > kMaximumItemLevel) { error = "Item level must be between 0 and 106."; return false; }
     if (characterIndex >= draft.after.characterCount) return false;
     auto staged = std::make_unique<Draft>(draft);
     auto& character = staged->after.characters[characterIndex];
@@ -225,6 +245,7 @@ bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex,
             if (owned.empty() || !equip(*staged, catalog, characterIndex, owned[random() % owned.size()], error)) { error = "No valid random choice for one of the selected slots."; return false; }
         } else if (!give(*staged, catalog, characterIndex, options[random() % options.size()]->definition.definitionHash, 1, power, true, error)) return false;
         auto& equipped = *staged->after.characters[characterIndex].equipment.slots[slot];
+        equipped.level = power;
         const auto* definition = catalog.find(equipped.definitionHash);
         for (std::size_t lane = 0; definition && lane < definition->compatible.size(); ++lane) {
             const auto& optionsForLane = definition->compatible[lane];
@@ -248,12 +269,19 @@ bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& ou
     };
     for (std::size_t c = 0; c < output.characterCount; ++c) {
         auto& character = output.characters[c];
+        if (!prepare_serial_counter(character)) {
+            error = "Item revision limit reached."; return false;
+        }
         const auto check = [&](Item& item) {
             const auto* definition = catalog.find(item.definitionHash);
             if (!definition || item.quantity > (definition->detail.instancedDefinitionState == build_data::items::details::InstancedDefinitionState::instanced ? 1 : definition->detail.maxStackSize)) {
                 error = "An item exceeds its installed stack limit or is missing from the catalog."; return false;
             }
             const auto* old = prior(item.instanceSoid);
+            // Preserve existing saves; enforce the cap when authoring a new level.
+            if (item.level > kMaximumItemLevel && (!old || item.level != old->level)) {
+                error = "Item level must be between 0 and 106."; return false;
+            }
             if (old && item != *old && item.mutationSerial <= old->mutationSerial && !bump(character, item)) {
                 error = "Item revision limit reached."; return false;
             }

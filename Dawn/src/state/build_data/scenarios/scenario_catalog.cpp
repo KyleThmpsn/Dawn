@@ -267,6 +267,35 @@ bool group_by_key(std::uint32_t registryKey, RosterGroup& output) noexcept {
     return false;
 }
 
+bool find_group_index(std::uint32_t registryKey, std::uint32_t objectTag, std::uint16_t& index) noexcept {
+    index = 0;
+    const Lock::Shared guard(g_lock);
+    const auto rows = g_groups.rows();
+    std::size_t found = rows.size();
+    for (std::size_t candidate = 0; candidate < rows.size(); ++candidate) {
+        if (rows[candidate].registryKey != registryKey || rows[candidate].objectTag != objectTag) continue;
+        if (found != rows.size()) return false;
+        found = candidate;
+    }
+    if (found == rows.size()) return false;
+    index = static_cast<std::uint16_t>(found);
+    return true;
+}
+
+bool group_by_key(std::uint32_t registryKey, std::uint32_t objectTag, RosterGroup& output) noexcept {
+    output = {};
+    const Lock::Shared guard(g_lock);
+    const RosterGroup* found = nullptr;
+    for (const auto& row : g_groups.rows()) {
+        if (row.registryKey != registryKey || row.objectTag != objectTag) continue;
+        if (found != nullptr) return false;
+        found = &row;
+    }
+    if (found == nullptr) return false;
+    output = *found;
+    return true;
+}
+
 DescriptorLookup find_published_descriptor(CueNodeId node,
                                            SlotDescriptorMetadata& output) noexcept {
     const Lock::Shared guard(g_lock);

@@ -27,6 +27,12 @@ constexpr std::uint32_t kOmegaForestGeneratorKey = 0x2763EC97U;
 constexpr std::int16_t kOmegaForestBubble = 11;
 constexpr std::uint32_t kOmegaLairKey = state::activity::omega_presentation::kIntroRegistry;
 constexpr std::int16_t kOmegaLairBubble = 14;
+/** Installed Omega also registers these two Forest areas before the opening.
+ * Their exact identities/scopes were acknowledged in the sixteen-entry startup. */
+constexpr std::array<service::sense_update::RosterEntry, 2> kOmegaForestAreas{{
+    {0x0A7A8608U, 12, 0x83U, true},
+    {0x34D23982U, 13, 0x83U, true},
+}};
 struct ExpectedSenseGroup final {
     std::uint32_t key;
     std::uint16_t firstObject;
@@ -58,23 +64,25 @@ constexpr std::uint32_t kOmegaSecondSenseGroupFixedBits = 521;
 
 [[nodiscard]] inline bool exact_omega_roster(
     const service::sense_update::SenseUpdate& update) noexcept {
-    // Six opening groups, optionally the Forest generator, then the Lair reveal and boss. The eight-
-    // entry native acknowledgement has three bubble blocks. Rejecting that valid extension
-    // resets the opening observer and makes the exact Forest gate edge report not_ready.
-    // The boss and first Crown cohort add two keys within the existing Lair bubble. The six sensor bodies
-    // are still checked separately; extra roster keys do not bypass them.
-    const auto extraCount=update.rosterEntryCount>kOmegaRosterKeys.size()+4
-        ? update.rosterEntryCount-kOmegaRosterKeys.size()-4 : 0U;
+    // Preserve the recovered 6..14-entry forms. The installed full roster adds
+    // exactly two Forest areas to the complete combat set, not arbitrary keys.
+    // All six opening sensor bodies remain mandatory in the report check below.
+    const bool withForestAreas = update.rosterEntryCount == kOmegaRosterKeys.size() + 4
+        + state::activity::omega_lair_full_roster::kCombatGroups.size() + kOmegaForestAreas.size();
+    const auto openingCount = update.rosterEntryCount - (withForestAreas ? kOmegaForestAreas.size() : 0U);
+    const auto extraCount=openingCount>kOmegaRosterKeys.size()+4
+        ? openingCount-kOmegaRosterKeys.size()-4 : 0U;
     if(extraCount>state::activity::omega_lair_full_roster::kCombatGroups.size()) { return false; }
-    const bool withCrown = update.rosterEntryCount >= kOmegaRosterKeys.size() + 4;
-    const bool withBoss = update.rosterEntryCount == kOmegaRosterKeys.size() + 3 || withCrown;
-    const bool withLair = update.rosterEntryCount == kOmegaRosterKeys.size() + 2 || withBoss;
+    const bool withCrown = openingCount >= kOmegaRosterKeys.size() + 4;
+    const bool withBoss = openingCount == kOmegaRosterKeys.size() + 3 || withCrown;
+    const bool withLair = openingCount == kOmegaRosterKeys.size() + 2 || withBoss;
     const bool withGenerator =
-        update.rosterEntryCount == kOmegaRosterKeys.size() + 1 || withLair;
+        openingCount == kOmegaRosterKeys.size() + 1 || withLair;
     if (!update.hasRosterAcknowledgement
         || update.topLevelRosterCount != kOmegaTopLevelGroups
-        || (update.rosterEntryCount != kOmegaRosterKeys.size() && !withGenerator)
-        || update.bubbleBlockCount != (withLair ? 3U : withGenerator ? 2U : 1U)) {
+        || (openingCount != kOmegaRosterKeys.size() && !withGenerator)
+        || update.bubbleBlockCount != (withLair ? 3U : withGenerator ? 2U : 1U)
+            + (withForestAreas ? kOmegaForestAreas.size() : 0U)) {
         return false;
     }
     // The client orders bubble entries by bubble number, so the generator (bubble 11) sits
@@ -86,11 +94,22 @@ constexpr std::uint32_t kOmegaSecondSenseGroupFixedBits = 521;
     bool bossSeen = !withBoss;
     bool crownSeen = !withCrown;
     std::array<bool,4> combatSeen{};
+    std::array<bool, kOmegaForestAreas.size()> forestAreasSeen{};
     for (std::size_t index = 0; index < update.rosterEntryCount; ++index) {
         const service::sense_update::RosterEntry& entry = update.rosterEntries[index];
         if (!entry.active || entry.state != 0x83U) {
             return false;
         }
+        bool forestArea = false;
+        for (std::size_t i = 0; withForestAreas && i < kOmegaForestAreas.size(); ++i) {
+            const auto& expected = kOmegaForestAreas[i];
+            if (entry.registryKey != expected.registryKey) { continue; }
+            if (forestAreasSeen[i] || entry.bubble != expected.bubble) { return false; }
+            forestAreasSeen[i] = true;
+            forestArea = true;
+            break;
+        }
+        if (forestArea) { continue; }
         if (!generatorSeen && entry.registryKey == kOmegaForestGeneratorKey
             && entry.bubble == kOmegaForestBubble) {
             generatorSeen = true;
@@ -132,6 +151,7 @@ constexpr std::uint32_t kOmegaSecondSenseGroupFixedBits = 521;
         ++expectedIndex;
     }
     for(std::size_t i=0;i<extraCount;++i) { if(!combatSeen[i]) { return false; } }
+    for (bool seen : forestAreasSeen) { if (withForestAreas && !seen) { return false; } }
     return generatorSeen && lairSeen && bossSeen && crownSeen && expectedIndex == kOmegaRosterKeys.size();
 }
 

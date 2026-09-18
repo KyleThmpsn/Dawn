@@ -30,7 +30,7 @@ struct Model {
     std::atomic_uint progress{0};
     std::string loadError, status;
     std::size_t character{};
-    int page{1}, category{}, rarity{}, sort{}, scope{}, power{1050}, quantity{1};
+    int page{1}, category{}, rarity{}, sort{}, scope{}, power{edit::kMaximumItemLevel}, quantity{1};
     int inventorySlot{-1}, detailPage{};
     bool classOnly{true}, includeInternal{};
     std::string type;
@@ -305,8 +305,8 @@ void inspector() {
             ImGui::TextWrapped("Choose a socket on an owned item to apply this perk or cosmetic.");
             space(8);
         }
-        ImGui::TextUnformatted("Item power");
-        ImGui::SetNextItemWidth(-FLT_MIN); ImGui::SliderInt("##power", &g->power, 0, 1500);
+        ImGui::TextUnformatted("Item level");
+        ImGui::SetNextItemWidth(-FLT_MIN); ImGui::SliderInt("##power", &g->power, 0, edit::kMaximumItemLevel, "%d", ImGuiSliderFlags_AlwaysClamp);
         if (definition->detail.instancedDefinitionState == state::build_data::items::details::InstancedDefinitionState::stackable) {
             ImGui::TextUnformatted("Quantity"); ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputInt("##quantity", &g->quantity);
         }
@@ -338,8 +338,8 @@ void inspector() {
             }
             if (!item) return;
             space(8);
-            ImGui::TextUnformatted("Item power"); ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputInt("##owned_power", &item->level)) { item->level = std::clamp(item->level, 0, 9999); g->draft->dirty = true; }
+            ImGui::TextUnformatted("Item level"); ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputInt("##owned_power", &item->level)) { item->level = std::clamp(item->level, 0, edit::kMaximumItemLevel); g->draft->dirty = true; }
             if (definition->detail.instancedDefinitionState == state::build_data::items::details::InstancedDefinitionState::stackable) {
                 ImGui::TextUnformatted("Quantity"); ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::InputInt("##owned_quantity", &item->quantity)) { item->quantity = std::clamp(item->quantity, 1, (std::max)(1, definition->detail.maxStackSize)); g->draft->dirty = true; }
@@ -592,7 +592,7 @@ void armory() {
     ImGui::EndChild();
 }
 void equipment() {
-    heading("Your loadout", "Select a piece to change perks, cosmetics, power or armor stats.");
+    heading("Your loadout", "Select a piece to change perks, cosmetics, item level or armor stats.");
     if (ImGui::Button("Randomize loadout...")) ImGui::OpenPopup("Randomize loadout");
     if (ImGui::BeginPopupModal("Randomize loadout", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("Choose the slots to randomize.");
@@ -600,7 +600,7 @@ void equipment() {
             ImGui::Checkbox(edit::kSlots[slot], &g->randomSlots[slot]);
             if (slot % 2 == 0) ImGui::SameLine(px(190));
         }
-        ImGui::SliderInt("New item power", &g->power, 0, 1500);
+        ImGui::SliderInt("New item level", &g->power, 0, edit::kMaximumItemLevel, "%d", ImGuiSliderFlags_AlwaysClamp);
         ImGui::TextDisabled("Class-correct gear, compatible perks, one exotic per category.");
         ImGui::TextDisabled("Previous equipment is kept in inventory.");
         if (ImGui::Button("Create random draft")) { (void)edit::randomize(*g->draft, g->catalog, g->character, g->randomSlots, g->power, g->random, g->status); ImGui::CloseCurrentPopup(); }

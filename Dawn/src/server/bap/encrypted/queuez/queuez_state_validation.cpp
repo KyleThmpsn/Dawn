@@ -31,10 +31,12 @@ bool valid(const SessionState& state) noexcept {
     // Family zero holds no resident manifest, so its whole contract is the version ladder. An
     // inactive family carries nothing. An active one names a character and never goes back.
     if (state.family0Active) {
-        if (state.family0Character == 0 || state.family0Version < kInitialFamilyVersion) {
+        if (state.family0RootSoid == 0 || state.family0Character == 0
+            || state.family0Version < kInitialFamilyVersion) {
             return false;
         }
-    } else if (state.family0Character != 0 || state.family0Version != kInitialFamilyVersion) {
+    } else if (state.family0RootSoid != 0 || state.family0Character != 0
+               || state.family0Version != kInitialFamilyVersion) {
         return false;
     }
     if (!state.family4Active) {

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><ProjectGuid>{A57C5E71-0097-4FC9-A95D-8ECAD44D5177}</ProjectGuid><WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><UseDebugLibraries>false</UseDebugLibraries></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><OutDir>$(ProjectDir)..\..\build\unit\account_settings\</OutDir><IntDir>$(OutDir)obj\</IntDir><TargetName>account_settings_tests</TargetName></PropertyGroup>
+  <ItemDefinitionGroup><Link><StackReserveSize>8388608</StackReserveSize></Link></ItemDefinitionGroup>
+  <ItemDefinitionGroup><ClCompile><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><LanguageStandard>stdcpp20</LanguageStandard><ConformanceMode>true</ConformanceMode><PreprocessorDefinitions>WIN32;_WINDOWS;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions><AdditionalIncludeDirectories>$(ProjectDir)..\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><RuntimeLibrary>MultiThreaded</RuntimeLibrary><ExceptionHandling>Sync</ExceptionHandling><Optimization>MaxSpeed</Optimization></ClCompile></ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="account_settings_tests.cpp" />
+    <ClCompile Include="..\src\middleware\web_service\status_fields.cpp" />
+    <ClCompile Include="..\src\middleware\web_service\messages\opcode601\opcode601_codec.cpp" />
+    <ClCompile Include="..\src\state\account\settings\settings_runtime.cpp" />
+    <ClCompile Include="..\src\middleware\web_service\messages\opcode701_codec.cpp" />
+    <ClCompile Include="..\src\middleware\web_service\web_service_envelope.cpp" />
+    <ClCompile Include="..\src\middleware\datagen\family4\account\preferences\preferences_encoder.cpp" />
+    <ClCompile Include="..\src\middleware\encoding\bit_reader.cpp" />
+    <ClCompile Include="..\src\middleware\encoding\bit_writer.cpp" />
+    <ClCompile Include="..\src\state\persistence\persistence.cpp" />
+    <ClCompile Include="..\src\state\activity\progress\mission_progress.cpp" />
+    <ClCompile Include="..\src\state\activity\nightfall\completion_reward.cpp" />
+    <ClCompile Include="..\src\state\account\account_state.cpp" />
+    <ClCompile Include="..\src\state\account\inventory\inventory_state.cpp" />
+    <ClCompile Include="..\src\state\account\settings\settings_state.cpp" />
+    <ClCompile Include="..\src\state\unlocks\unlocks_runtime.cpp" />
+    <ClCompile Include="..\src\core\filesystem\path.cpp" />
+    <ClCompile Include="..\src\core\settings\address_text.cpp" />
+    <ClCompile Include="..\src\core\settings\settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\json_structure.cpp" />
+    <ClCompile Include="..\src\core\settings\json_scalar.cpp" />
+    <ClCompile Include="..\src\core\settings\json_number.cpp" />
+    <ClCompile Include="..\src\core\settings\experiments\experiment_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\client\client_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\client\client_ui_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\client\external\client_external_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\server\server_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\server\entitlement_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\server\gameplay\gameplay_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\server\gameplay\gameplay_settings_validation.cpp" />
+    <ClCompile Include="..\src\core\settings\steam\steam_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state_settings.cpp" />
+    <ClCompile Include="..\src\core\settings\state\account_rows_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\account_settings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\activity_arrival_override_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\activity_default_destination_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\audio_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\controls_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\display_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\family5_override_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\interface_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\inventory_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\key_bindings_parser.cpp" />
+    <ClCompile Include="..\src\core\settings\state\social_parser.cpp" />
+    <ClCompile Include="..\src\state\activity\defaults\activity_defaults_validation.cpp" />
+    <ClCompile Include="..\src\state\activity\destination\activity_destination_validation.cpp" />
+    <ClCompile Include="..\src\state\entitlements\entitlement_defaults.cpp" />
+    <ClCompile Include="..\src\state\entitlements\entitlement_validation.cpp" />
+    <ClCompile Include="..\vendor\sqlite\sqlite3.c"><CompileAs>CompileAsC</CompileAs><WarningLevel>TurnOffAllWarnings</WarningLevel><PreprocessorDefinitions>SQLITE_THREADSAFE=1;SQLITE_DQS=0;SQLITE_DEFAULT_FOREIGN_KEYS=1;SQLITE_OMIT_LOAD_EXTENSION;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -19,6 +19,8 @@ bool staging::same_resident(const ResidentObject& left, const ResidentObject& ri
 bool staging::same_state(const SessionState& left, const SessionState& right) noexcept {
     if (!valid(left) || !valid(right) || left.family4RootSoid != right.family4RootSoid
         || left.family3RootSoid != right.family3RootSoid
+        || left.family0RootSoid != right.family0RootSoid
+        || left.pendingBannerRoot != right.pendingBannerRoot
         || left.family4Version != right.family4Version
         || left.family3Version != right.family3Version
         || left.family0Version != right.family0Version
@@ -114,6 +116,7 @@ bool stage_family4_snapshot(const SessionState& before,
 
 /** Stages the family-zero publication policy. */
 bool stage_family0_subscription(const SessionState& before,
+                                std::uint64_t familyRootSoid,
                                 std::uint64_t selectedCharacter,
                                 bool& publish,
                                 bool& incremental,
@@ -121,12 +124,14 @@ bool stage_family0_subscription(const SessionState& before,
     publish = false;
     incremental = false;
     after = before;
-    if (!valid(before) || selectedCharacter == 0) {
+    if (!valid(before) || familyRootSoid == 0 || selectedCharacter == 0
+        || (before.family0Active && before.family0RootSoid != familyRootSoid)) {
         return false;
     }
     if (!before.family0Active) {
         publish = true;
         after.family0Active = true;
+        after.family0RootSoid = familyRootSoid;
         after.family0Character = selectedCharacter;
         after.family0Version = kInitialFamilyVersion;
         return true;
@@ -185,12 +190,48 @@ bool stage_family3_subscription(const SessionState& before,
 }
 
 void stage_unsubscription(const SessionState& before,
+                          std::uint8_t familyType,
                           std::uint64_t familyRootSoid,
                           SessionState& after) noexcept {
     after = before;
-    if ((before.family4Active && familyRootSoid == before.family4RootSoid)
-        || (before.family3Active && familyRootSoid == before.family3RootSoid)) {
-        after = {};
+    if (familyRootSoid == 0) {
+        return;
+    }
+    // Native E09260 releases one family record. Several families use the same account root;
+    // resetting the entire SessionState here disables later Collections pulls on that connection.
+    switch (familyType) {
+    case kBannerFamilyType:
+        if (before.pendingBannerRoot == familyRootSoid) {
+            after.pendingBannerRoot = 0;
+        }
+        if (before.family0Active && before.family0RootSoid == familyRootSoid) {
+            after.family0Active = false;
+            after.family0RootSoid = 0;
+            after.family0Character = 0;
+            after.family0Version = kInitialFamilyVersion;
+        }
+        break;
+    case kRosterFamilyType:
+        if (before.family3Active && before.family3RootSoid == familyRootSoid) {
+            after.family3Active = false;
+            after.family3RootSoid = 0;
+            after.family3Version = kInitialFamilyVersion;
+            after.family3Phase = Family3Phase::normal;
+        }
+        break;
+    case kAccountFamilyType:
+        if (before.family4Active && before.family4RootSoid == familyRootSoid) {
+            after.family4Active = false;
+            after.family4RootSoid = 0;
+            after.family4Version = kInitialFamilyVersion;
+            after.family4ResidentCount = 0;
+            after.family4Residents = {};
+            // The character-change phase depends on an active account family.
+            after.family3Phase = Family3Phase::normal;
+        }
+        break;
+    default:
+        break;
     }
 }
 

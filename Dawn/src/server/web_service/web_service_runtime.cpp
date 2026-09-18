@@ -29,6 +29,7 @@
 #include "../../state/runtime/runtime.h"
 #include "opcode_routes.h"
 #include "web_service_actions.h"
+#include "settings_save.h"
 #include "../../middleware/web_service/messages/opcode904.h"
 #include "../../middleware/web_service/messages/opcode905.h"
 #include "../../middleware/web_service/messages/opcode405.h"
@@ -215,6 +216,10 @@ bool consume(std::span<const std::byte> request,
         // revision has been staged. Unsupported or duplicate replies remain refused.
         return middleware::web_service::encode_response(message,
             middleware::web_service::ResponseShape::statusPair,status,response,written);
+    }
+
+    if (message.opcode == middleware::web_service::messages::opcode701::kOpcode) {
+        return save_settings(message, response, written);
     }
 
     if (message.opcode == middleware::web_service::messages::opcode205::kOpcode) {

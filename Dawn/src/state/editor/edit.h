@@ -5,6 +5,7 @@
 namespace dawn::state::editor {
 using Item = account::inventory::Item;
 using Stats = std::array<int, 6>;
+inline constexpr int kMaximumItemLevel = 106;
 struct Draft {
     AccountState before, after;
     bool dirty{};

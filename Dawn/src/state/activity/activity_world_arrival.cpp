@@ -23,7 +23,7 @@ std::atomic<std::uint64_t> g_transitionTick{};
 std::atomic<bool> g_missionSeedArmed{false};
 /** A return off-destination ends the run; ordinary region transitions retain this value. */
 std::atomic<std::uint64_t> g_missionRunGeneration{1};
-/** Set only after the client post-apply path resolves the current instance's type-18 storage. */
+/** Set only after native observation resolves the current instance's mission-state storage. */
 std::atomic<bool> g_missionAuthorityRuntimeInitialized{false};
 /** Set once the native type-7 request is issued; silences Omega authority emission. */
 std::atomic<bool> g_omegaAuthorityQuiesced{false};
@@ -97,7 +97,7 @@ bool omega_authority_quiesced() noexcept {
     return g_omegaAuthorityQuiesced.load(std::memory_order_acquire);
 }
 
-/** Latches the client's successful type-18 post-apply observation. */
+/** Latches the client's successful native mission-storage observation. */
 bool acknowledge_mission_authority_runtime_initialized() noexcept {
     return !g_missionAuthorityRuntimeInitialized.exchange(true, std::memory_order_acq_rel);
 }

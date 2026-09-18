@@ -70,7 +70,7 @@ bool prepare(std::uint64_t run,bool selected) noexcept {
     const std::lock_guard lock(mutex);if(run!=mission_run_generation()) {return false;}
     if(!selected) {controller.reset();readinessSchedule.reset();observations.reset();poseInbox={};contestCount=0;selectedRun=nextPublication=0;stalled.reset();return false;}
     if(!load() || !controller.select(document->views(),run)) {return false;}
-    if(selectedRun!=run) {readinessSchedule.reset();observations.reset();poseInbox={};contestCount=0;lastActive=lastComplete=UINT32_MAX;lastSection=UINT8_MAX;stalled.reset();}
+    if(selectedRun!=run) {readinessSchedule.reset();observations.reset();poseInbox={};contestCount=0;nextPublication=0;lastActive=lastComplete=UINT32_MAX;lastSection=UINT8_MAX;stalled.reset();}
     selectedRun=run;return true;
 }
 namespace {
@@ -105,7 +105,12 @@ Frame snapshot(std::uint64_t run,std::uint64_t now,bool ready) noexcept {
 }
 Request request() noexcept {const std::lock_guard lock(mutex);return current()?Request{controller.owner(),controller.frame()}:Request{};}
 std::uint64_t native_run() noexcept {const std::lock_guard lock(mutex);return current()?selectedRun:0;}
-bool publication_due(std::uint64_t now) noexcept {const std::lock_guard lock(mutex);return current() && controller.frame().enabled && now>=nextPublication;}
+bool publication_due(std::uint64_t now) noexcept {
+    const std::lock_guard lock(mutex);
+    // The first snapshot enables the mission. Schedule it on arrival, before
+    // position samples can fill the queue during the five-second idle interval.
+    return current() && (nextPublication==0 || controller.frame().enabled) && now>=nextPublication;
+}
 void observe_position(float x,float y,float z) noexcept {const std::lock_guard lock(mutex);if(current()) {Observation e{};e.kind=ObservationKind::position;e.owner=controller.owner();e.point={x,y,z};observations.push(e);}}
 void observe_submission(std::uint64_t run,std::uint32_t definition,std::int64_t offset,std::uint32_t bank,std::uint8_t row,std::uint32_t generation) noexcept {
     if(!dialogue_identity(definition,offset,bank,row)) {return;}const std::lock_guard lock(mutex);

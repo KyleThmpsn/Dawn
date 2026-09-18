@@ -39,7 +39,8 @@ constexpr std::uintptr_t kEntityFactoryRva = 0x56D9B0U;
 constexpr std::uintptr_t kComponentStartRva = 0xB31910U;
 constexpr std::uintptr_t kEffectTransformComposeRva = 0x11F0510U;
 // Actual 808062FD child-scene creator and selector parameter-to-object resolver.
-// These receipts preserve every argument/result; they do not repair actor ownership.
+// Child creation also corrects Scene 27's Osiris hold anchor; actor ownership
+// and all other child-scene arguments retain their native behavior.
 constexpr std::uintptr_t kSelectorChildCreateRva = 0x1B69C30U;
 constexpr std::uintptr_t kSelectorObjectResolveRva = 0xDB4630U;
 constexpr std::uintptr_t kPinnedImageExtent = 0x8A5EA00U;
@@ -156,9 +157,9 @@ enum class HookSlot : std::size_t {
     spawnerDeficit,
     sceneActorScheduler,
     entityFactory,
+    selectorChildCreate,
     componentStart,
     effectTransformCompose,
-    selectorChildCreate,
     selectorObjectResolve,
     count,
 };
@@ -299,7 +300,7 @@ __declspec(noinline) bool __fastcall selector_child_create(std::byte* selector,
     const std::byte* actorBindings, std::uint64_t* result) noexcept {
     hooking::CallGate::Scope call(g_callGate);
     const auto original = hooking::await_original(g_selectorChildCreateOriginal);
-    const bool inspect = call.accepts_side_effects()
+    const bool inspect = call.accepts_side_effects() && g_omegaProbeActive.load(std::memory_order_acquire)
         && safe_read<std::uint32_t>(selector, kInvalidHandle) == kOmegaIkoraSelectorGraph
         && omega_forced();
     const auto previous = g_selectorChildEntity;
@@ -930,17 +931,17 @@ bool install_omega_ikora_origin_probe() noexcept {
         image + kSpawnerDeficitRva,
         image + kSceneActorSchedulerRva,
         image + kEntityFactoryRva,
+        image + kSelectorChildCreateRva,
         image + kComponentStartRva,
         image + kEffectTransformComposeRva,
-        image + kSelectorChildCreateRva,
         image + kSelectorObjectResolveRva,
     };
     const bool spawnerPrefix = !omegaProbe || prefix_matches(targets[0], kSpawnerDeficitPrefix);
     const bool scenePrefix = !omegaProbe || prefix_matches(targets[1], kSceneActorSchedulerPrefix);
     const bool factoryPrefix = prefix_matches(targets[2], kEntityFactoryPrefix);
-    const bool componentPrefix = !omegaProbe || prefix_matches(targets[3], kComponentStartPrefix);
-    const bool effectPrefix = !omegaProbe || prefix_matches(targets[4], kEffectTransformComposePrefix);
-    const bool childPrefix = !omegaProbe || prefix_matches(targets[5], kSelectorChildCreatePrefix);
+    const bool childPrefix = prefix_matches(targets[3], kSelectorChildCreatePrefix);
+    const bool componentPrefix = !omegaProbe || prefix_matches(targets[4], kComponentStartPrefix);
+    const bool effectPrefix = !omegaProbe || prefix_matches(targets[5], kEffectTransformComposePrefix);
     const bool resolvePrefix = !omegaProbe || prefix_matches(targets[6], kSelectorObjectResolvePrefix);
     if (!spawnerPrefix || !scenePrefix || !factoryPrefix || !componentPrefix || !effectPrefix
         || !childPrefix || !resolvePrefix) {
@@ -969,13 +970,15 @@ bool install_omega_ikora_origin_probe() noexcept {
         {targets[0], reinterpret_cast<void*>(&spawner_deficit)},
         {targets[1], reinterpret_cast<void*>(&scene_actor_scheduler)},
         {targets[2], reinterpret_cast<void*>(&entity_factory)},
-        {targets[3], reinterpret_cast<void*>(&component_start)},
-        {targets[4], reinterpret_cast<void*>(&effect_transform_compose)},
-        {targets[5], reinterpret_cast<void*>(&selector_child_create)},
+        {targets[3], reinterpret_cast<void*>(&selector_child_create)},
+        {targets[4], reinterpret_cast<void*>(&component_start)},
+        {targets[5], reinterpret_cast<void*>(&effect_transform_compose)},
         {targets[6], reinterpret_cast<void*>(&selector_object_resolve)},
     }};
     const auto firstHook = omegaProbe ? std::size_t{0} : factorySlot;
-    const auto hookCount = omegaProbe ? kHookCount : std::size_t{1};
+    // The adjacent factory and child hooks serve production fixes. Optional
+    // diagnostics must not decide whether the phase-two Osiris anchor works.
+    const auto hookCount = omegaProbe ? kHookCount : std::size_t{2};
     if (!hooking::detour::install(std::span(specs).subspan(firstHook,hookCount),
                                 std::span(g_handles).subspan(firstHook,hookCount))) {
         report("ev=omega_ikora_origin stage=install result=attach_fail "
@@ -995,19 +998,19 @@ bool install_omega_ikora_origin_probe() noexcept {
         reinterpret_cast<EntityFactory>(g_handles[2].original));
     hooking::publish_original(
         g_componentStartOriginal,
-        reinterpret_cast<ComponentStart>(g_handles[3].original));
+        reinterpret_cast<ComponentStart>(g_handles[4].original));
     hooking::publish_original(
         g_effectTransformComposeOriginal,
-        reinterpret_cast<EffectTransformCompose>(g_handles[4].original));
+        reinterpret_cast<EffectTransformCompose>(g_handles[5].original));
     hooking::publish_original(
         g_selectorChildCreateOriginal,
-        reinterpret_cast<SelectorChildCreate>(g_handles[5].original));
+        reinterpret_cast<SelectorChildCreate>(g_handles[3].original));
     hooking::publish_original(
         g_selectorObjectResolveOriginal,
         reinterpret_cast<SelectorObjectResolve>(g_handles[6].original));
     g_omegaProbeActive.store(omegaProbe,std::memory_order_release);
     g_callGate.accept();
-    report("ev=launchpad stage=breach_shutter_observer result=installed hooks=%zu omega_probe=%u",
+    report("ev=launchpad stage=breach_shutter_observer result=installed hooks=%zu omega_probe=%u osiris_hold=1",
            hookCount,omegaProbe ? 1U : 0U);
     report("ev=omega_ikora_origin stage=install result=ok transaction=atomic "
            "targets=+%llX,+%llX,+%llX,+%llX,+%llX,+%llX,+%llX filter=%08X "
@@ -1050,10 +1053,10 @@ bool uninstall_omega_ikora_origin_probe() noexcept {
             reinterpret_cast<void*>(&hooking::call_gate_detail::leave)},
     };
     // Retain the installed selection through quiescing and a deferred removal.
-    // Passing unattached optional handles would reject factory-only teardown.
+    // Passing unattached optional handles would reject production-only teardown.
     const bool omegaProbe = g_omegaProbeActive.load(std::memory_order_acquire);
     const auto firstHook = omegaProbe ? std::size_t{0} : factorySlot;
-    const auto hookCount = omegaProbe ? kHookCount : std::size_t{1};
+    const auto hookCount = omegaProbe ? kHookCount : std::size_t{2};
     const hooking::detour::UninstallResult result = hooking::detour::uninstall(
         std::span(g_handles).subspan(firstHook,hookCount), protectedEntries, &calls_idle);
     report("ev=omega_ikora_origin stage=uninstall result=%s active_calls=%u retained=%u "

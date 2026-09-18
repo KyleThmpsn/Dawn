@@ -37,15 +37,13 @@ void population_packet_cases() {
     check(!placement::project(capabilities,15,outside) && outside.count==0);
     capabilities=m::kPlacements;capabilities[1]=capabilities[0];
     check(!placement::project(capabilities,15,outside) && outside.count==0);
-    auto oversized=snapshot;oversized.archiveOmega=true;packet.fill(std::byte{0xA5});active=99;
+    auto oversized=snapshot;oversized.archiveOmega=true;
+    oversized.roster.groupCount=wire::kGroupCapacity+1;
+    packet.fill(std::byte{0xA5});active=99;
     check(!wire::encode_sensor_auth_update(oversized,packet,active) && active==0
         && packet[0]==std::byte{0xA5});
-    // The archived Omega encoder's roster-count field is four bits. Retain a
-    // valid archive-sized Mercury fixture while still covering both live populations.
-    constexpr auto archiveGroups=std::size_t{15};
-    static_assert(m::kRegistries.size()>archiveGroups);
-    snapshot.roster.groupCount=archiveGroups;
-    blocks[0].keys=std::span(keys).first(archiveGroups);
+    // Both encoders support the complete roster, including more than 15 groups.
+    static_assert(m::kRegistries.size()>15);
     for(const auto archive:{false,true}) {
         snapshot.archiveOmega=archive;
         check(wire::auth_body_bits(snapshot,keys[0],1,0,false)==641);

@@ -21,6 +21,8 @@
   <ItemGroup>
     <ClCompile Include="deep_storage_tests.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
     <ClCompile Include="..\src\state\activity\deep_storage\controller.cpp" />
+    <ClCompile Include="..\src\state\activity\deep_storage\runtime.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
+    <ClCompile Include="fixtures\deep_storage\runtime_startup_tests.cpp" />
     <ClCompile Include="..\src\state\activity\deep_storage\mechanism_bindings.cpp" />
 
     <ClCompile Include="..\src\state\activity\coo\mission_script.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
@@ -28,4 +30,7 @@
   </ItemGroup>
   <Import Project="..\lua-items.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyDeepStorageRuntimeScript" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)..\scripts\deep_storage.lua" DestinationFiles="$(OutDir)Dawn\scripts\deep_storage.lua" />
+  </Target>
 </Project>

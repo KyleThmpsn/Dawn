@@ -49,6 +49,8 @@ struct SessionState {
     std::uint64_t family4RootSoid{};
     /** Root whose Family-3 roster store has accepted its full snapshot. */
     std::uint64_t family3RootSoid{};
+    /** Family zero must retain its root even if account or roster subscriptions are released. */
+    std::uint64_t family0RootSoid{};
     std::array<ResidentObject, kResidentCapacity> family4Residents{};
     /** Character the resident family-zero pair names. Only a change earns an incremental. */
     std::uint64_t family0Character{};
@@ -184,6 +186,11 @@ struct ItemDismantle {
 struct StagedPublication {
     SessionState after{};
     bool hasState{};
+    /** Cancel only delayed copies for these exact unsubscribed roots, after reply publication. */
+    std::uint64_t cancelFamily4RepushRoot{};
+    std::uint64_t cancelBannerRepushRoot{};
+    /** The active account family was released, so a cross-peer refresh is no longer owed. */
+    bool releasedFamily4{};
     /** The Family-4 companion went out and owes its delayed second copy. */
     bool armsFamily4Repush{};
     /** Root the companion used, kept because an unmapped snapshot records no residents. */

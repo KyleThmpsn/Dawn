@@ -12,5 +12,12 @@ inline bool blocked(const BossRequest& request,float fraction) noexcept {
 }
 using coo::native_damage_floor::Packet;
 using coo::native_damage_floor::get;
-using coo::native_damage_floor::clamp;
+inline constexpr std::size_t kLethalFlagsOffset=0x60;
+inline Packet clamp(std::span<std::byte> packet,std::int32_t bodyRegion,float minimum) noexcept {
+    const auto result=coo::native_damage_floor::clamp(packet,bodyRegion,minimum);
+    // B804E0 reads this flag at B80D23 and skips the post-damage health calculation.
+    // A positive body floor invalidates that lethal prediction for this hit.
+    if(result==Packet::clamped) {packet[kLethalFlagsOffset]&=std::byte{0xFE};}
+    return result;
+}
 }

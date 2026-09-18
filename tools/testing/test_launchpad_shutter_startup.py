@@ -106,18 +106,24 @@ bool calls_idle() noexcept {return g_callGate.idle();}
 CHECK(!core::settings::current.omegaExperiments.unsafeDiagnostics);
 // Production must still install with an unrelated diagnostic signature missing.
 badPrefix=kSpawnerDeficitRva;
-CHECK(boot());CHECK(installed==1 && g_handles[2].attached && g_callGate.accepting());
+CHECK(boot());CHECK(installed==2 && g_handles[2].attached && g_handles[3].attached && g_callGate.accepting());
+CHECK(g_handles[2].original==image.data()+kEntityFactoryRva);
+CHECK(g_handles[3].original==image.data()+kSelectorChildCreateRva);
+CHECK(g_selectorChildCreateOriginal.load()==reinterpret_cast<SelectorChildCreate>(image.data()+kSelectorChildCreateRva));
 CHECK(!g_handles[0].attached && !g_omegaProbeActive.load());
 auto before=transactions;CHECK(boot() && transactions==before);
 // Quiescing preserves ownership and a deferred removal can be retried.
 deferDetach=true;CHECK(!uninstall_omega_ikora_origin_probe());
-CHECK(!g_callGate.accepting() && g_handles[2].attached);
+CHECK(!g_callGate.accepting() && g_handles[2].attached && g_handles[3].attached);
 CHECK(!boot());deferDetach=false;
-CHECK(uninstall_omega_ikora_origin_probe());CHECK(removed==1 && !g_handles[2].attached);
+CHECK(uninstall_omega_ikora_origin_probe());CHECK(removed==2 && !g_handles[2].attached && !g_handles[3].attached);
+CHECK(!g_selectorChildCreateOriginal.load());
 CHECK(uninstall_omega_ikora_origin_probe());
-// The required factory signature and attachment failure still fail closed.
+// Both required signatures and attachment failure still fail closed.
 badPrefix=kEntityFactoryRva;before=transactions;CHECK(!boot() && transactions==before);
+badPrefix=kSelectorChildCreateRva;CHECK(!boot() && transactions==before);
 badPrefix=0;failAttach=true;CHECK(!boot() && !g_callGate.accepting());failAttach=false;
+CHECK(!g_handles[2].attached && !g_handles[3].attached);
 CHECK(boot());CHECK(uninstall_omega_ikora_origin_probe());
 // Each existing opt-in still installs/removes the full original bundle.
 for(unsigned flag=0;flag<3;++flag) {

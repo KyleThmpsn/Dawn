@@ -72,6 +72,9 @@ void shutdown() noexcept;
 [[nodiscard]] bool commit_account(const AccountState& before,
                                   const AccountState& after) noexcept;
 
+/** Commit menu preferences and advance the account revision without rewriting inventory. */
+[[nodiscard]] bool commit_settings(const account::settings::AccountSettings& settings) noexcept;
+
 /** Durable, non-recycling instance identity candidates. */
 [[nodiscard]] bool next_item_instance_soid(const AccountState& account,
                                            std::uint64_t& output) noexcept;

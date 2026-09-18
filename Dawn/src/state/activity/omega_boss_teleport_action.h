@@ -248,8 +248,9 @@ struct MotionReceipt final {
 enum class CyclePhase : std::uint8_t { idle,claimed,departing,relocating,arriving,finished,completed,interrupted };
 enum class CycleEvent : std::uint8_t { none,started,relocated,arriving,finished,completed,interrupted };
 
-/** Records one native movement lifecycle. A return-false receipt from stage3
- * must precede cleanup: selector inactive alone also occurs on cancellation.
+/** Records one native movement lifecycle. A terminal update must precede
+ * cleanup: selector inactive alone also occurs on cancellation. The final-arena
+ * selector can finish at stage2 after placement; earlier moves require stage3.
  * Native placement must be bound separately: selector requested/placed points
  * identify the authored request and the resulting raw motion target. The actual
  * entity position is independently supplied at cleanup. All serials belong to
@@ -296,6 +297,14 @@ public:
         if(motionId!=motionId_) { return CycleEvent::none; }
         if(phase_==CyclePhase::departing) {
             if(receipt.stage==Stage::departure && receipt.nativeContinues) { return CycleEvent::none; }
+            // Native10B0030 places through F4AAB0 before its stage2 selector
+            // callback. The final-arena callback may end the motion there.
+            // This is only a terminal-update receipt: cleanup must still prove
+            // the exact owned selector is inactive and the boss is at the
+            // independently bound native placement before releasing traversal.
+            if(owner_.island==4 && receipt.stage==Stage::relocation && !receipt.nativeContinues) {
+                phase_=CyclePhase::finished;return CycleEvent::finished;
+            }
             if(receipt.stage==Stage::relocation && receipt.nativeContinues) {
                 phase_=CyclePhase::relocating;return CycleEvent::relocated;
             }

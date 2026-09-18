@@ -3,9 +3,9 @@
 .SYNOPSIS
 Installs a prebuilt Dawn release over Destiny 2 build 86657. No build tools required.
 .DESCRIPTION
-Run from an extracted release ZIP. Every installation starts a fresh profile using
-the release defaults. DLLs and Dawn runtime directories are replaced together,
-with a persistent rollback journal. Old saves remain in the backup. The original
+Run from an extracted release ZIP. A normal installation starts a fresh profile.
+Update-Dawn.ps1 selects -Update to retain existing Dawn saves and preferences.
+DLLs and runtime content are replaced together with a persistent rollback journal.
 Sunrise/Restoration directories are left intact and are never imported.
 .EXAMPLE
 .\Install-Dawn.ps1 -GameRoot 'C:\Destiny 2 Development'
@@ -17,6 +17,7 @@ Sunrise/Restoration directories are left intact and are never imported.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string] $GameRoot,
+    [switch] $Update,
     [switch] $Restore,
     [string] $BackupPath
 )
@@ -154,6 +155,59 @@ function Read-Release([string] $PackageRoot) {
     return $manifest
 }
 
+function Get-UpdatePlan([string] $Root, $Release) {
+    $runtimes = @('Dawn', 'bin/x64/Dawn')
+    $available = @($runtimes | Where-Object {
+        (Test-Path -LiteralPath (Join-SafePath $Root ($_ + '/settings.json')) -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-SafePath $Root ($_ + '/player-state.db')) -PathType Leaf)
+    })
+    if (-not $available.Count) { throw 'No existing Dawn profile found. Use Install-Dawn.cmd for a fresh installation.' }
+    $managed = @{}
+    foreach ($entry in $Release.files) { $managed[[string]$entry.path] = $true }
+    $retired = @{}
+    $receiptPath = Join-SafePath $Root '.dawn/release.json'
+    if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+        $previous = Read-Object $receiptPath
+        if ($previous.PSObject.Properties['release']) {
+            $oldVersion = $null; $newVersion = $null
+            if ([version]::TryParse([string]$previous.release, [ref]$oldVersion) -and
+                [version]::TryParse([string]$Release.release, [ref]$newVersion) -and $oldVersion -gt $newVersion) {
+                throw "This updater will not downgrade Dawn $oldVersion to $newVersion. Use -Restore with its matching backup instead."
+            }
+        }
+        if ($previous.PSObject.Properties['files']) {
+            foreach ($entry in $previous.files) {
+                $path = [string]$entry.path
+                # Only obsolete release content may be retired, never a save or preference.
+                if ($path -cmatch '^Dawn/(scripts/[A-Za-z0-9_-]+\.(lua|json)|vendor_[A-Za-z0-9_]+\.txt|event_presets/[A-Za-z0-9_-]+\.txt|licenses/[A-Za-z0-9_.-]+)$' -and
+                    -not $managed.ContainsKey($path)) { $retired[$path] = $true }
+            }
+        }
+    }
+    $preserved = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($runtime in $runtimes) {
+        # Keep separate root/bin profiles separate. Mirror the existing profile only when
+        # the other runtime folder is absent (older DLL-only/single-folder installations).
+        $sourceRuntime = if (Test-Path -LiteralPath (Join-SafePath $Root $runtime) -PathType Container) { $runtime } else { $available[0] }
+        $sourceRoot = Join-SafePath $Root $sourceRuntime
+        foreach ($file in @(Get-PlainFiles $sourceRoot)) {
+            $relative = $file.FullName.Substring($sourceRoot.Length + 1).Replace('\', '/')
+            $preference = $relative -in @('settings.json', 'hud.json', 'movement.json', 'player.json')
+            if ($relative -match '^cache(/|$)') { continue }
+            if (-not $preference -and ($managed.ContainsKey('Dawn/' + $relative) -or $retired.ContainsKey('Dawn/' + $relative))) { continue }
+            if ($preference) {
+                $null = Read-Object $file.FullName
+                if ($file.Length -ge 1MB) { throw "Existing preference exceeds the runtime limit: $($file.FullName)" }
+            }
+            $preserved.Add([pscustomobject]@{
+                source = $file.FullName; target = $runtime + '/' + $relative
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            })
+        }
+    }
+    return [pscustomobject]@{ Files = @($preserved.ToArray()) }
+}
+
 function Move-Checked([string] $From, [string] $To) {
     Assert-PlainPath $From
     Assert-PlainPath $To
@@ -287,6 +341,7 @@ function Invoke-DawnInstall {
     $version = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
     if ($version -ne '86657.20.08.23.1800.d2_rc') { throw "Unsupported Destiny build: $version. This installer requires 86657.20.08.23.1800.d2_rc." }
     Assert-GameClosed
+    $targets = @($script:Targets | Where-Object { -not $Update -or $_ -cne $script:DisplayTarget })
     $backupRoot = Join-SafePath $root '.dawn/release-backups'
     Assert-PlainPath $backupRoot
     $history = @()
@@ -311,7 +366,7 @@ function Invoke-DawnInstall {
         if ($unfinished.Count) { throw "An interrupted installation needs recovery. Run with -Restore -BackupPath `"$($unfinished[0].Path)`" first." }
         $release = Read-Release $PSScriptRoot
         # Neither the payload nor a source checkout may be inside a directory we replace.
-        foreach ($relative in $script:Targets) {
+        foreach ($relative in $targets) {
             $target = Get-InstallTarget $root $relative
             Assert-PlainPath $target
             if ($PSScriptRoot -eq $target -or $PSScriptRoot.StartsWith($target + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -329,12 +384,20 @@ function Invoke-DawnInstall {
             $null = Read-Object $defaultPath
             if ((Get-Item -LiteralPath $defaultPath).Length -ge 1MB) { throw "Release configuration exceeds the runtime limit: $name" }
         }
-        $displayDefaults = Get-DisplayDefaults
+        $updatePlan = if ($Update) { Get-UpdatePlan $root $release } else { $null }
+        $displayDefaults = if (-not $Update) { Get-DisplayDefaults } else { $null }
         Write-Host "Release: $($release.release)"
         Write-Host "Game:    $root"
-        Write-Host 'Save:    Fresh profile and release-default settings. Existing Dawn saves will be backed up.'
-        Write-Host 'Display: Windowed fullscreen for this Windows user; resolution and other game preferences are preserved.'
-        if (-not $PSCmdlet.ShouldProcess($root, 'Back up and replace both Dawn runtime trees and DLL copies; start a fresh save and set windowed fullscreen')) { return }
+        if ($Update) {
+            Write-Host 'Save:    Keep existing Dawn progress, identity, settings, and custom content. Back up before updating.'
+            Write-Host 'Display: Existing graphics and key-binding preferences remain unchanged.'
+            $action = 'Back up and update both Dawn runtime trees and DLL copies, preserving existing saves and preferences'
+        } else {
+            Write-Host 'Save:    Fresh profile and release-default settings. Existing Dawn saves will be backed up.'
+            Write-Host 'Display: Windowed fullscreen for this Windows user; resolution and other game preferences are preserved.'
+            $action = 'Back up and replace both Dawn runtime trees and DLL copies; start a fresh save and set windowed fullscreen'
+        }
+        if (-not $PSCmdlet.ShouldProcess($root, $action)) { return }
     }
 
     $stateDir = Join-SafePath $root '.dawn'
@@ -378,24 +441,41 @@ function Invoke-DawnInstall {
             Copy-Verified $file.FullName (Join-SafePath $stage ('bin/x64/Dawn/' + $relative))
         }
         Copy-Verified (Join-Path $stage 'steam_api64.dll') (Join-SafePath $stage 'bin/x64/steam_api64.dll')
+        $preservedHashes = @{}
+        if ($Update) {
+            foreach ($entry in $updatePlan.Files) {
+                $to = Join-SafePath $stage $entry.target
+                Copy-Verified $entry.source $to
+                if ((Get-FileHash -LiteralPath $to).Hash -ne $entry.sha256) { throw "Existing profile changed during staging: $($entry.source)" }
+                $preservedHashes[$entry.target] = $entry.sha256
+            }
+        }
         [IO.Directory]::CreateDirectory((Join-Path $stage '.dawn')) | Out-Null
         Write-Json (Join-Path $stage '.dawn/release.json') ([ordered]@{
             schema = 1; release = $release.release; installedUtc = [DateTime]::UtcNow.ToString('o');
-            profileMode = 'fresh'; backup = $transaction; files = $release.files
+            profileMode = $(if ($Update) { 'preserve' } else { 'fresh' }); backup = $transaction; files = $release.files
         })
-        $displayStage = Join-SafePath $stage $script:DisplayTarget
-        [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($displayStage)) | Out-Null
-        [IO.File]::WriteAllText($displayStage, $displayDefaults.Text, $script:Utf8)
-        $operations = @($script:Targets | ForEach-Object {
+        if (-not $Update) {
+            $displayStage = Join-SafePath $stage $script:DisplayTarget
+            [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($displayStage)) | Out-Null
+            [IO.File]::WriteAllText($displayStage, $displayDefaults.Text, $script:Utf8)
+        }
+        $operations = @($targets | ForEach-Object {
             [pscustomobject]@{ target = $_; existed = (Test-Path -LiteralPath (Get-InstallTarget $root $_)); phase = 'pending' }
         })
         $journal = [pscustomobject]@{ schema = 1; gameRoot = $root; release = $release.release; state = 'prepared';
-            displayPreferencesPath = $displayDefaults.Path; operations = $operations }
+            operations = $operations }
+        if (-not $Update) { $journal | Add-Member -NotePropertyName displayPreferencesPath -NotePropertyValue $displayDefaults.Path }
         $journalPath = Join-Path $transaction 'journal.json'
         Write-Json $journalPath $journal
         try {
             $journal.state = 'installing'
             Write-Json $journalPath $journal
+            if ($Update) {
+                foreach ($entry in $updatePlan.Files) {
+                    if ((Get-FileHash -LiteralPath $entry.source).Hash -ne $entry.sha256) { throw "Existing profile changed before replacement: $($entry.source)" }
+                }
+            }
             foreach ($operation in $journal.operations) {
                 Assert-GameClosed
                 $target = Get-InstallTarget $root $operation.target
@@ -420,10 +500,15 @@ function Invoke-DawnInstall {
             }
             foreach ($entry in $release.files) {
                 foreach ($prefix in @('', 'bin/x64/')) {
-                    if ((Get-FileHash -LiteralPath (Join-SafePath $root ($prefix + $entry.path))).Hash -ne $entry.sha256) {
+                    $relative = $prefix + $entry.path
+                    $expected = if ($preservedHashes.ContainsKey($relative)) { $preservedHashes[$relative] } else { $entry.sha256 }
+                    if ((Get-FileHash -LiteralPath (Join-SafePath $root $relative)).Hash -ne $expected) {
                         throw "Installed release verification failed: $($entry.path)"
                     }
                 }
+            }
+            foreach ($relative in $preservedHashes.Keys) {
+                if ((Get-FileHash -LiteralPath (Join-SafePath $root $relative)).Hash -ne $preservedHashes[$relative]) { throw "Preserved profile verification failed: $relative" }
             }
             $journal.state = 'complete'
             Write-Json $journalPath $journal
@@ -434,8 +519,12 @@ function Invoke-DawnInstall {
             throw "Installation failed; previous files were restored. $failure Backup: $transaction"
         }
         Write-Host "Installed Dawn $($release.release)."
-        Write-Host 'A fresh save will be created from the release defaults on first launch.'
-        Write-Host 'Windowed fullscreen is now the default. Players can change it later in Video settings.'
+        if ($Update) {
+            Write-Host 'Existing Dawn saves and settings were preserved. The game upgrades older save databases on first launch.'
+        } else {
+            Write-Host 'A fresh save will be created from the release defaults on first launch.'
+            Write-Host 'Windowed fullscreen is now the default. Players can change it later in Video settings.'
+        }
         Write-Host "Backup: $transaction"
         Write-Host 'Launch destiny2.exe normally. First launch rebuilds caches and may take longer.'
     } finally { $lock.Dispose() }

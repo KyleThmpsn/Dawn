@@ -320,6 +320,29 @@ bool append_roster_notification(
                              nonce,
                              response,
                              written);
+    if (destination == "mission_scot" && transition.rosterWire.omegaEndingRetire) {
+        const auto& ending = transition.rosterWire;
+        const bool seedRuntime = ending.archiveOmega && !ending.phaseOneOnly
+            && ending.omegaSceneAuthority && ending.omegaEndingState == 1
+            && ending.omegaEndingSeedRuntime;
+        static std::atomic_uint64_t lastEndingPublication{UINT64_MAX};
+        const auto signature = (state::activity::mission_run_generation() << 32U)
+            ^ (std::uint64_t{ending.omegaEndingRevision} << 5U)
+            ^ (encoded ? 1U : 0U) ^ (ending.omegaEndingPlay ? 2U : 0U)
+            ^ (seedRuntime ? 4U : 0U) ^ (ending.phaseOneOnly ? 8U : 0U)
+            ^ (ending.preserveMissionAuthorityState ? 16U : 0U);
+        if (lastEndingPublication.exchange(signature, std::memory_order_relaxed) != signature) {
+            core::log::writef(core::log::Channel::server,
+                encoded ? core::log::Level::info : core::log::Level::warn,
+                "ev=omega_ending stage=publication result=%s run=%llu revision=%u play=%u "
+                "seed_runtime=%u authority_preserve=%u registration_only=%u bytes=%zu",
+                encoded ? "staged" : "failed",
+                static_cast<unsigned long long>(state::activity::mission_run_generation()),
+                ending.omegaEndingRevision, ending.omegaEndingPlay ? 1U : 0U,
+                seedRuntime ? 1U : 0U, ending.preserveMissionAuthorityState ? 1U : 0U,
+                ending.phaseOneOnly ? 1U : 0U, messageSize);
+        }
+    }
     if (encoded) {
         middleware::secure_channel::advance_nonce(nonce);
         RosterPublication staged{};

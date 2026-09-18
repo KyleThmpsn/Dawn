@@ -81,7 +81,10 @@ namespace music = state::activity::omega_music;
 }
 
 [[nodiscard]] bool omega_rescue_scope(const Snapshot& snapshot,std::uint32_t key) noexcept {
-    return snapshot.omegaSceneAuthority && snapshot.seedAuthoredSensors
+    // Crown requests these Scenes long after opening seeding ends. Keep the
+    // encounter's cast, marker and Scene updates alive for their run generation.
+    return snapshot.omegaSceneAuthority
+        && (snapshot.seedAuthoredSensors || snapshot.omegaRescueSourcesGeneration!=0)
         && key==rescue::kRegistry;
 }
 [[nodiscard]] const rescue::Scene* omega_rescue_scene(const Snapshot& snapshot,
@@ -115,7 +118,10 @@ namespace music = state::activity::omega_music;
 
 [[nodiscard]] bool omega_ikora_lattice(const Snapshot& snapshot, std::uint32_t key,
                                       std::uint8_t type, std::uint16_t index) noexcept {
-    return snapshot.omegaSceneAuthority && snapshot.seedAuthoredSensors
+    // The native release arrives after the one-shot bootstrap seed. Its exact
+    // gate update must survive with global authored seeding disabled.
+    return snapshot.omegaSceneAuthority
+        && (snapshot.seedAuthoredSensors || snapshot.omegaIkoraLatticeReleased)
         && lattice::is_gate({key, type, index});
 }
 
@@ -218,7 +224,9 @@ constexpr std::size_t kOmegaBossMemberBits = 42;
 }
 [[nodiscard]] bool omega_ending(const Snapshot& snapshot,std::uint32_t key,
                                std::uint8_t type,std::uint16_t index) noexcept {
-    return snapshot.omegaSceneAuthority && snapshot.seedAuthoredSensors
+    // The ending is requested after opening seeding has finished. Its own
+    // retirement/state authority must carry both play and stop revisions.
+    return snapshot.omegaSceneAuthority
         && (snapshot.omegaEndingRetire || snapshot.omegaEndingState==ending::kState)
         && key==ending::kRegistry && type==6 && index==ending::kSlot;
 }
@@ -869,10 +877,12 @@ auth_body_bits(const Snapshot& snapshot,
     if (active_omega_boundary_body(snapshot, key, slotType, slotIndex)) {
         return find_mission_body(key, slotType, slotIndex)->width;
     }
-    if (snapshot.omegaSceneAuthority && kOmegaSceneAuthorityBodyReady
-        && snapshot.seedAuthoredSensors) {
-        if (omega_ikora_source(key, slotType, slotIndex)) { return kOmegaIkoraSourceBits; }
-        if (omega_opening_scene(key, slotType, slotIndex)) {
+    if (snapshot.omegaSceneAuthority && kOmegaSceneAuthorityBodyReady) {
+        if (snapshot.seedAuthoredSensors && omega_ikora_source(key, slotType, slotIndex)) {
+            return kOmegaIkoraSourceBits;
+        }
+        if ((snapshot.seedAuthoredSensors || snapshot.omegaIkoraPortalRequested)
+            && omega_opening_scene(key, slotType, slotIndex)) {
             return kOmegaSceneBits + (snapshot.omegaIkoraPortalRequested ? 32U : 0U);
         }
     }
@@ -1047,7 +1057,8 @@ bool write_auth_body(bits::Writer& writer,
                && snapshot.seedAuthoredSensors && omega_ikora_source(key, slotType, slotIndex)) {
         encoded = write_omega_ikora_source(writer);
     } else if (snapshot.omegaSceneAuthority && kOmegaSceneAuthorityBodyReady
-               && snapshot.seedAuthoredSensors && omega_opening_scene(key, slotType, slotIndex)) {
+               && (snapshot.seedAuthoredSensors || snapshot.omegaIkoraPortalRequested)
+               && omega_opening_scene(key, slotType, slotIndex)) {
         encoded = write_omega_scene(writer, snapshot);
     } else if (omega_forest_generator(snapshot, key, slotType, slotIndex)) {
         encoded = state::activity::coo::native_generator::write_activation(writer,

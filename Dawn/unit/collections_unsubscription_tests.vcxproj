@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations"><ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration></ItemGroup>
+  <PropertyGroup Label="Globals"><VCProjectVersion>18.0</VCProjectVersion><ProjectGuid>{D22D83CD-620F-4B4C-82BB-080251CC4A51}</ProjectGuid><WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType><PlatformToolset>v145</PlatformToolset><UseDebugLibraries>false</UseDebugLibraries></PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup><LinkIncremental>false</LinkIncremental><OutDir>$(ProjectDir)..\..\build\unit\collections_unsubscription\</OutDir><IntDir>$(OutDir)obj\</IntDir><TargetName>collections_unsubscription_tests</TargetName></PropertyGroup>
+  <ItemDefinitionGroup><ClCompile><AdditionalIncludeDirectories>$(ProjectDir)..\src</AdditionalIncludeDirectories><LanguageStandard>stdcpp20</LanguageStandard><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><ConformanceMode>true</ConformanceMode><RuntimeLibrary>MultiThreaded</RuntimeLibrary><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><PreprocessorDefinitions>NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile><Link><SubSystem>Console</SubSystem><OptimizeReferences>true</OptimizeReferences><StackReserveSize>8388608</StackReserveSize></Link></ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="..\src\server\bap\encrypted\bap_connection_publication.cpp" /><ClCompile Include="collections_unsubscription_tests.cpp" /><ClCompile Include="$(ProjectDir)..\src\middleware\bap\family_unsubscription.cpp" /><ClCompile Include="$(ProjectDir)..\src\server\bap\encrypted\queuez\queuez_state_validation.cpp" /><ClCompile Include="$(ProjectDir)..\src\server\bap\encrypted\queuez\staging\queuez_family_staging.cpp" /><ClCompile Include="$(ProjectDir)..\src\server\bap\encrypted\queuez\staging\queuez_character_staging.cpp" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

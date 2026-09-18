@@ -33,9 +33,21 @@ spawn or section alone. Omega (`mission_scot`) has a verified terminal state, bu
 process-global and does not carry an authenticated character owner; its completion is not written
 until a safe session-bound terminal exists.
 
-Account menu settings are imported and preserved, but this change does not invent a menu-update
-route where the server currently has none. Family-5 overrides are likewise imported and restored;
-they remain boot-authored policy rather than mutable gameplay progress.
+The game's account-update request (opcode 701) saves menu preferences, including FOV, account
+key bindings, sensitivity, audio, HUD/chat options, VSync, and post-processing toggles. Partial
+updates preserve omitted settings. A successful response follows the database commit; invalid
+requests or failed writes leave the previous settings intact. Repeated identical updates do not
+rewrite the database. The completed PC seed version is saved too, so later sign-ins retain the
+saved preferences instead of reseeding them from local cvars.
+
+Schema version 5 adds these PC/display fields to existing saves without resetting inventory,
+characters, or old settings. Existing saves start with the original seed policy until the client
+submits its first settings update. Video options owned by the game's local cvars (such as
+resolution and graphics quality) continue using that file. Selecting local key-binding storage
+also continues using the game's cvars; Dawn retains the selected storage mode.
+
+Family-5 overrides are imported and restored; they remain boot-authored policy rather than
+mutable gameplay progress.
 
 The files `settings.json`, `hud.json`, `movement.json`, and `player.json` in a runtime tree are local
 configuration. Repository defaults live in `Dawn/resources/default_*.json`. The repository

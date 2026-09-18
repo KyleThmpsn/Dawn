@@ -8,9 +8,9 @@
 
 Install a packaged release over an existing game installation using the bundled Dawn installer.
 
-**[Download the installer ZIP — 0.1.2](https://github.com/isinternets/Dawn/releases/download/v0.1.2/Dawn-0.1.2.zip)**
+**[Download the installer ZIP — 0.1.3](https://github.com/isinternets/Dawn/releases/download/v0.1.3/Dawn-0.1.3.zip)**
 
-[Release notes and checksum](https://github.com/isinternets/Dawn/releases/tag/v0.1.2)
+[Release notes and checksum](https://github.com/isinternets/Dawn/releases/tag/v0.1.3)
 
 </div>
 
@@ -34,18 +34,20 @@ Players do not need Visual Studio, Python, Lua, or a source checkout.
 
 ### If you want to play
 
-Download **[Dawn-0.1.2.zip](https://github.com/isinternets/Dawn/releases/download/v0.1.2/Dawn-0.1.2.zip)**
-from the [GitHub release](https://github.com/isinternets/Dawn/releases/tag/v0.1.2). Under
+Download **[Dawn-0.1.3.zip](https://github.com/isinternets/Dawn/releases/download/v0.1.3/Dawn-0.1.3.zip)**
+from the [GitHub release](https://github.com/isinternets/Dawn/releases/tag/v0.1.3). Under
 **Assets**, choose that named installer ZIP. GitHub's automatically generated **Source code**
 archives contain the source checkout and do not include the installable payload.
 
-Version 0.1.2 enables the New Light rifle-room door fix with the release's default settings. Read the release notes before installing. Extract the entire installer
+Version 0.1.3 includes performance and mission fixes, persistent game settings, and an updater that keeps existing saves. Read the release notes before installing. Extract the entire installer
 ZIP into its own folder. Before running anything, check that the extracted folder contains:
 
 ```text
 Dawn-<release>/
   Install-Dawn.cmd
   Install-Dawn.ps1
+  Update-Dawn.cmd
+  Update-Dawn.ps1
   READ-ME.txt
   release.json
   payload/
@@ -64,6 +66,7 @@ Dawn-<release>/
 - **`Install-Dawn.cmd`** is the file you double-click. It starts the PowerShell installer and
   keeps the window open so you can read its result.
 - **`Install-Dawn.ps1`** performs the version checks, installation, backup, and rollback.
+- **`Update-Dawn.cmd`** starts **`Update-Dawn.ps1`** to update while keeping existing saves and settings.
 - **`release.json`** identifies the release and lists the expected payload files, sizes, and
   hashes. The installer uses it to check that the bundle is complete and unchanged.
 - **`payload/`** contains the built DLL and the matching runtime content that will be installed.
@@ -82,6 +85,8 @@ tools/install/
   release/
     Install-Dawn.cmd
     Install-Dawn.ps1
+    Update-Dawn.cmd
+    Update-Dawn.ps1
     READ-ME.txt
     README.md
 ```
@@ -102,13 +107,14 @@ instructions on this page refer to the installer in `tools/install/release/` aft
 
 ## Install or update Dawn
 
-**Every installation starts a fresh save. This includes updating Dawn and reinstalling the same
-release. Existing progress and Dawn settings are backed up, but are not imported into the new
-installation.**
+**Use `Update-Dawn.cmd` to keep an existing Dawn save. Use `Install-Dawn.cmd` for a
+fresh save.** The updater is included in bundles starting with 0.1.3; earlier
+bundles only contain the fresh-install workflow.
 
 1. Extract the entire release ZIP into a new folder, such as a folder under Downloads.
 2. Close Destiny 2.
-3. Confirm that `release.json` and `payload/` are beside **`Install-Dawn.cmd`**, then double-click it.
+3. Confirm that `release.json` and `payload/` are present, then double-click **`Update-Dawn.cmd`**
+   to retain progress, or **`Install-Dawn.cmd`** to start fresh.
 4. Enter your existing game folder when prompted: the folder containing **`destiny2.exe`**.
 5. Wait for the installer to confirm success and show the backup location.
 6. Launch `destiny2.exe` normally. The installer does not launch the game for you.
@@ -131,22 +137,35 @@ matching DLLs and runtime content at both locations the game can load from:
   .dawn/release-backups/
 ```
 
-The first launch creates a new player database from the release defaults and rebuilds caches,
-so it can take longer than later launches. Use the complete release bundle when updating: its DLL,
-scripts, settings, and content are intended to be installed together.
+The first launch rebuilds caches, so it can take longer than later launches.
+An update upgrades older Dawn databases automatically; a fresh installation creates a new one.
+Keep the complete release bundle together when updating.
 
 ### Saves and settings
 
-The new installation uses the packaged settings, mission scripts, vendor rules, and event presets.
-Old progress, identity, Dawn preferences, event selections, and custom scripts are not carried over.
-Previous `Dawn` folders and DLLs are kept in the installation backup. Existing `Sunrise` and
-`Restoration` folders remain intact and are not imported.
+The updater keeps existing databases and their companion files, account identity, Dawn preferences,
+event selections, and custom files. It refreshes the packaged DLL, mission scripts, vendor rules,
+and presets. Packaged files replace older versions with the same names; personal scripts with
+other names remain. Previously packaged content that the new release retires is kept in the backup.
+Separate root and `bin/x64` profiles remain separate.
 
-The installer sets **Windowed Fullscreen** while preserving your existing resolution, render scale,
+The fresh installer uses release defaults and does not carry old personal data into the active
+installation. Both workflows back up the previous `Dawn` folders and DLLs. Existing `Sunrise` and
+`Restoration` folders remain intact and are not imported by the release updater.
+
+The fresh installer sets **Windowed Fullscreen** while preserving your existing resolution, render scale,
 graphics quality, and key bindings. You can choose another mode later in the game's Video settings.
 This changes the installing Windows user's shared Destiny display preferences, so other Destiny 2
 installations under that same Windows user also see the mode change. Replacing only a DLL does not
-apply this display setting.
+apply this display setting. The updater leaves the native display preferences unchanged.
+
+To update directly from PowerShell in the extracted release folder:
+
+```powershell
+.\Update-Dawn.ps1 -GameRoot "D:\Games\Destiny 2"
+```
+
+Add `-WhatIf` to preview, or `-Restore` to roll back the most recent installation/update.
 
 ### Preview an installation
 

@@ -78,11 +78,18 @@ static void roster_checks() {
     roster.groups[roster.groupCount++].key=0x96E0CBE5U;
     roster.topLevelGroupCount=roster.groupCount;
     const auto find=[&](std::size_t i,r::layouts::RosterGroup& out) noexcept { if(i>=cache->size()) { return false; }out=(*cache)[cache->size()-1-i];return true; };
-    check(r::prepare_layout(layout,find),"mission-local root overlay resolves independently of cache order");
-    check(r::admit(layout,*storage,roster,find),"full required roster fits unchanged capacity");
+    const auto indexByKey=[&](std::uint32_t key,std::uint32_t tag,std::uint16_t& out) noexcept {
+        for(std::size_t i=0;i<cache->size();++i) if((*cache)[cache->size()-1-i].registryKey==key && (*cache)[cache->size()-1-i].objectTag==tag) {out=static_cast<std::uint16_t>(i);return true;}
+        return false;
+    };
+    const auto byKey=[&](std::uint32_t key,std::uint32_t tag,r::layouts::RosterGroup& out) noexcept {
+        std::uint16_t index{};return indexByKey(key,tag,index) && find(index,out);
+    };
+    check(r::prepare_layout(layout,indexByKey,find),"mission-local root overlay resolves independently of cache order");
+    check(r::admit(layout,*storage,roster,byKey),"full required roster fits unchanged capacity");
     check(roster.groupCount==r::kRequiredGroups+2 && roster.groupCount<=20,"no shared roster capacity change");
-    const auto count=roster.groupCount;check(r::admit(layout,*storage,roster,find) && roster.groupCount==count,"stable roster across bubble changes");
-    layout.tag=0x80F46DB0U;check(!r::prepare_layout(layout,find) && !r::admit(layout,*storage,roster,find),"Gateway layout cannot enter Beyond roster adapter");
+    const auto count=roster.groupCount;check(r::admit(layout,*storage,roster,byKey) && roster.groupCount==count,"stable roster across bubble changes");
+    layout.tag=0x80F46DB0U;check(!r::prepare_layout(layout,indexByKey,find) && !r::admit(layout,*storage,roster,byKey),"Gateway layout cannot enter Beyond roster adapter");
 }
 static void well_channel_checks() {
     // The captured native callback prefix uses 0x1408. 0x1460 is its bank

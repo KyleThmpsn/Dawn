@@ -93,16 +93,24 @@ inline bool hijacked_boss_damage_contracts() {
     request.stage=2;request.requested=true;HIJACKED_DAMAGE_CHECK(policy::blocked(request,.2F));
     request.requested=false;HIJACKED_DAMAGE_CHECK(!policy::blocked(request,0.F));
     request.owner={};HIJACKED_DAMAGE_CHECK(!policy::blocked(request,0.F));
-    // A native row stores a resulting fraction. Preserve header, flags, unrelated
-    // region targets and above-floor targets, including arbitrary flag patterns.
+    // A native row stores a resulting fraction. A protected body clamp must also
+    // clear the packet's lethal prediction, preserving all other header/row bits.
     std::array<std::byte,0x68+4*12> packet{};packet.fill(std::byte{0xA5});field<std::int32_t>(packet,0x64,4);
     const std::array<std::int32_t,4> regions{7,0,7,7};const std::array<float,4> targets{0.F,.1F,.9F,-.5F};
     for(std::size_t i=0;i<4;++i) {field<std::uint32_t>(packet,0x68+i*12,0xABCDEF01U+static_cast<std::uint32_t>(i));field(packet,0x6C+i*12,regions[i]);field(packet,0x70+i*12,targets[i]);}
-    const auto original=packet;auto expected=original;field(expected,0x70,2.F/3.F);field(expected,0x70+3*12,2.F/3.F);
+    const auto original=packet;auto expected=original;expected[0x60]=std::byte{0xA4};field(expected,0x70,2.F/3.F);field(expected,0x70+3*12,2.F/3.F);
     HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,policy::floor(0))==policy::Packet::clamped && packet==expected);
     HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,policy::floor(0))==policy::Packet::unchanged && packet==expected);
-    packet=original;expected=original;field(expected,0x70,1.F/3.F);field(expected,0x70+3*12,1.F/3.F);
+    packet=original;expected=original;expected[0x60]=std::byte{0xA4};field(expected,0x70,1.F/3.F);field(expected,0x70+3*12,1.F/3.F);
     HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,policy::floor(1))==policy::Packet::clamped && packet==expected);
+    // Nonlethal threshold hits keep their flags. Unrelated regions and hits
+    // above the threshold must not have a lethal prediction rewritten.
+    packet=original;packet[0x60]=std::byte{0xA4};
+    HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,policy::floor(1))==policy::Packet::clamped && packet==expected);
+    packet=original;HIJACKED_DAMAGE_CHECK(policy::clamp(packet,99,policy::floor(1))==policy::Packet::unchanged && packet==original);
+    packet=original;field(packet,0x70,.8F);field(packet,0x70+3*12,.8F);
+    {const auto before=packet;HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,policy::floor(0))==policy::Packet::unchanged && packet==before);}
+    // The final phase retains the real lethal flag and zero-health result.
     packet=original;HIJACKED_DAMAGE_CHECK(policy::clamp(packet,7,0)==policy::Packet::unchanged && packet==original);
     for(const auto count:{-1,33}) {auto bad=original;field<std::int32_t>(bad,0x64,count);const auto before=bad;HIJACKED_DAMAGE_CHECK(policy::clamp(bad,7,2.F/3.F)==policy::Packet::invalid && bad==before);}
     {auto bad=original;const auto before=bad;HIJACKED_DAMAGE_CHECK(policy::clamp(std::span(bad).first(0x67),7,.5F)==policy::Packet::invalid && bad==before);HIJACKED_DAMAGE_CHECK(policy::clamp(std::span(bad).first(bad.size()-1),7,.5F)==policy::Packet::invalid && bad==before);}
