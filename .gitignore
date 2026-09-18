@@ -27,6 +27,7 @@
 *.exe.recipe
 *.vcxproj.FileListAbsolute.txt
 *.nativecodeanalysis.xml
+.xwin-cache/
 
 # Runtime caches, logs, local tools, and editor state
 /.dawn/
