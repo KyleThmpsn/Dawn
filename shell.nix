@@ -1,4 +1,6 @@
-{pkgs ? import <nixpkgs> {}}:
+{
+  pkgs ? import <nixpkgs> { },
+}:
 pkgs.mkShell {
   buildInputs = with pkgs; [
     cmake
@@ -7,6 +9,7 @@ pkgs.mkShell {
     llvmPackages_latest.lld
     llvmPackages_latest.llvm
     xwin
+    python3
   ];
 
   CC = "clang-cl";
@@ -15,7 +18,10 @@ pkgs.mkShell {
   XWIN_SDK_VERSION = "10.0.26100";
   XWIN_CRT_VERSION = "17.10.35025";
 
-  hardeningDisable = ["pic" "fortify"];
+  hardeningDisable = [
+    "pic"
+    "fortify"
+  ];
 
   shellHook = ''
     export XWIN_DIR="$PWD/.xwin-cache"
