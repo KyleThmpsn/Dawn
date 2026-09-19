@@ -11,6 +11,10 @@
 namespace dawn::core::ui::fonts::runtime {
 namespace {
 
+/** The symbol face maps its glyphs across this private-use span; nothing else in it is wanted. */
+constexpr ImWchar kSymbolRangeFirst = 0xE000;
+constexpr ImWchar kSymbolRangeLast = 0xEEFF;
+
 /** 8 pixels refuses unreadable or near-zero authored sizes. */
 constexpr float kMinimumBasePixelSize = 8.0F;
 /** 64 pixels caps atlas work from bad authored sizes. */
@@ -34,6 +38,9 @@ struct State {
     float priorMainScale{kAuthoredScale};
     float basePixelSize{};
     float scale{kAuthoredScale};
+    /** The heavier cuts of the family, each null when the install ships none. */
+    ImFont* medium{};
+    ImFont* displayBold{};
 };
 
 State g_state{};
@@ -117,6 +124,36 @@ bool initialize(HMODULE module, float basePixelSize) noexcept {
         return false;
     }
 
+    // Merge the game's symbol face over the same sizes. Installed strings embed these code points
+    // directly, so without it item names and descriptions show replacement boxes where the game
+    // shows its own symbols. A missing or refused face simply leaves the text face alone.
+    installed::DataView symbolData{};
+    if (installed::load_symbols(module, symbolData)) {
+        static const ImWchar symbolRanges[]{kSymbolRangeFirst, kSymbolRangeLast, 0};
+        ImFontConfig symbolConfig{};
+        symbolConfig.FontDataOwnedByAtlas = false;
+        symbolConfig.RasterizerDensity = kRasterizerDensity;
+        symbolConfig.MergeMode = true;
+        symbolConfig.GlyphRanges = symbolRanges;
+        (void)atlas->AddFontFromMemoryTTF(
+            symbolData.bytes, symbolData.byteCount, basePixelSize, &symbolConfig);
+    }
+
+    // Each heavier cut is added as a face of its own rather than merged: they cover the same code
+    // points as the regular one, and a merge would keep whichever face reached each of them first.
+    const auto add_weight = [&](installed::Weight requested) -> ImFont* {
+        installed::DataView data{};
+        if (!installed::load_weight(module, requested, data)) {
+            return nullptr;
+        }
+        ImFontConfig config{};
+        config.FontDataOwnedByAtlas = false;
+        config.RasterizerDensity = kRasterizerDensity;
+        return atlas->AddFontFromMemoryTTF(data.bytes, data.byteCount, basePixelSize, &config);
+    };
+    ImFont* medium = add_weight(installed::Weight::medium);
+    ImFont* displayBold = add_weight(installed::Weight::displayBold);
+
     io.FontDefault = font;
     ImGui::GetStyle().FontSizeBase = basePixelSize;
     ImGui::GetStyle().FontScaleMain = kAuthoredScale;
@@ -127,7 +164,9 @@ bool initialize(HMODULE module, float basePixelSize) noexcept {
                priorBasePixelSize,
                priorMainScale,
                basePixelSize,
-               kAuthoredScale};
+               kAuthoredScale,
+               medium,
+               displayBold};
     ReleaseSRWLockExclusive(&g_fontLock);
     return true;
 }
@@ -170,6 +209,17 @@ bool shutdown() noexcept {
     g_state = {};
     ReleaseSRWLockExclusive(&g_fontLock);
     return true;
+}
+
+/** @return One heavier cut of the UI face, or null when the install ships none. */
+ImFont* weight(Weight value) noexcept {
+    AcquireSRWLockShared(&g_fontLock);
+    const bool active = g_state.initialized && ImGui::GetCurrentContext() == g_state.context;
+    ImFont* face = !active                     ? nullptr
+                   : value == Weight::medium   ? g_state.medium
+                                               : g_state.displayBold;
+    ReleaseSRWLockShared(&g_fontLock);
+    return face;
 }
 
 /** @return One snapshot of the font source, size, and scale, read under the lock. */

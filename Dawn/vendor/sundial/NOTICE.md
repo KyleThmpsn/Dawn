@@ -6,7 +6,9 @@ License: GPL-3.0-only (see LICENSE).
 Copyright: Sundial contributors, including KyleThmpsn.
 
 Dawn adapts the localized investment string and icon readers, the class-restriction
-hash lists, subclass ability displays and path selection, and the five plug-selection scopes for its native C++ menu.
+hash lists, the dummy-item hash list, subclass ability displays and attunement selection, the
+five plug-selection scopes, the armor-stat allocation socket model, and the finished
+sandbox-perk catalog layout for its native C++ menu.
 The editor integration and adaptations are distributed under GPL-3.0-only.
 No Destiny artwork, textures, or manifest database is distributed: previews and
 names are read from the user's installed game packages.

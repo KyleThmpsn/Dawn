@@ -1,11 +1,78 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Selection scopes follow Sundial by KyleThmpsn. See vendor/sundial/NOTICE.md.
 #include "catalog.h"
+#include "../../../vendor/sundial/dummy_items.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 
 namespace dawn::state::editor {
+/** @return The curve for one stat row inside a group, or null when the group does not scale it. */
+const ScaledStat* scaled_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow) noexcept {
+    if (groupIndex >= catalog.statGroups.size()) return nullptr;
+    for (const auto& scaled : catalog.statGroups[groupIndex].scaled) {
+        if (scaled.definitionIndex == statRow) return &scaled;
+    }
+    return nullptr;
+}
+
+std::int32_t display_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow,
+                          std::int32_t investment) noexcept {
+    const auto* scaled = scaled_stat(catalog, groupIndex, statRow);
+    if (!scaled || scaled->curve.empty()) return investment;
+    const auto& curve = scaled->curve;
+    // An authored point wins outright; the curve is a lookup before it is an interpolation.
+    for (const auto& point : curve) if (point.investment == investment) return point.display;
+    // A linear stat keeps whatever the curve does not name, rather than clamping to an endpoint.
+    if (scaled->linear) return investment;
+    if (investment < curve.front().investment) return curve.front().display;
+    if (investment > curve.back().investment) return curve.back().display;
+    for (std::size_t i = 0; i + 1 < curve.size(); ++i) {
+        const auto& left = curve[i];
+        const auto& right = curve[i + 1];
+        if (investment < left.investment || investment > right.investment) continue;
+        const std::int64_t span = std::int64_t(right.investment) - left.investment;
+        if (span == 0) return left.display;
+        const std::int64_t rise = std::int64_t(right.display) - left.display;
+        const std::int64_t run = std::int64_t(investment) - left.investment;
+        return static_cast<std::int32_t>(left.display + ((rise * run) / span));
+    }
+    return investment;
+}
+
+bool numeric_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow) noexcept {
+    const auto* scaled = scaled_stat(catalog, groupIndex, statRow);
+    return scaled && scaled->numeric;
+}
+
+/**
+ * @return The element one item deals, or none when it carries no damage marker.
+ * The installed build marks a weapon's element with a sandbox perk rather than a field. Six
+ * indices name the fixed markers: an older trio and the one the modern sandbox uses. A weapon
+ * carrying markers for more than one element switches at runtime, so it reports none.
+ * @param detail Item detail carrying the sandbox perk list.
+ */
+Element element_of(const build_data::items::details::Definition& detail) noexcept {
+    constexpr std::uint16_t kLegacyArc = 83, kLegacySolar = 84, kLegacyVoid = 85;
+    constexpr std::uint16_t kModernArc = 449, kModernSolar = 450, kModernVoid = 451;
+    Element found = Element::none;
+    const std::size_t count = (std::min)(static_cast<std::size_t>(detail.sandboxPerkCount),
+                                         detail.sandboxPerks.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        Element marker = Element::none;
+        switch (detail.sandboxPerks[i]) {
+        case kLegacyArc: case kModernArc: marker = Element::arc; break;
+        case kLegacySolar: case kModernSolar: marker = Element::solar; break;
+        case kLegacyVoid: case kModernVoid: marker = Element::void_; break;
+        default: continue;
+        }
+        // Two markers naming different elements mean the weapon chooses at runtime.
+        if (found != Element::none && found != marker) return Element::none;
+        found = marker;
+    }
+    return found;
+}
+
 std::string searchable(std::string value) {
     for (char& ch : value) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return value;
@@ -48,8 +115,9 @@ void Catalog::finish() {
         char hash[40]{};
         std::snprintf(hash, sizeof hash, "0x%08X %u", item.definition.definitionHash, item.definition.definitionHash);
         item.internal = item.internal || item.name.empty()
-            || ((item.kind == GearKind::weapon || item.kind == GearKind::armor) && item.type.empty());
-        if (item.name.empty()) item.name = std::string(item.plug ? "Unnamed perk " : "Unnamed item ") + hash;
+            || ((item.kind == GearKind::weapon || item.kind == GearKind::armor) && item.type.empty())
+            || dummies::contains(item.definition.definitionHash);
+        if (item.name.empty()) { item.unnamed = true; item.name = std::string(item.plug ? "Unnamed perk " : "Unnamed item ") + hash; }
         item.search = searchable(item.name + " " + item.type + " " + item.description + " " + hash);
         if (item.plug) plugs.push_back(item.definition.definitionIndex);
         for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane) {

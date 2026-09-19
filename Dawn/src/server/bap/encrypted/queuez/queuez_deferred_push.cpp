@@ -317,10 +317,19 @@ bool consume_deferred(Session& session,
         return false;
     }
     if (consume_account_resync(session, scratch, response, written, touchesScratch)) {
+        session.accountResyncFailures = 0;
         return true;
     }
-    // A failed resync remains armed and blocks unrelated deferred output until it can be retried.
+    // A failed resync remains armed and blocks unrelated deferred output until it can be retried,
+    // but not forever: past the limit the arm is dropped and the rest of the output flows again.
     if (session.accountResyncArmed) {
+        if (++session.accountResyncFailures >= kAccountResyncFailureLimit) {
+            session.accountResyncArmed = false;
+            session.accountResyncFailures = 0;
+            core::log::write(core::log::Channel::server,
+                             core::log::Level::warn,
+                             "ev=queuez stage=peer_resync result=abandoned reason=failures");
+        }
         return false;
     }
     if (session.queuez.family4Active

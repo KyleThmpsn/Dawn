@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -37,6 +38,45 @@ struct Definition {
      */
     std::uint8_t actionStatRow{};
 };
+
+/**
+ * The ten global masterwork-stat plug categories, one per weapon stat.
+ * Every weapon's masterwork socket draws its candidates from these and never from the randomized
+ * set, so a plug declaring one of them is that weapon's masterwork and the tier it reached is its
+ * own `actionStatValue`. Both the roll that fills those sockets and the tooltip that reads one
+ * back answer off this list, so it lives with the definitions it describes rather than twice.
+ */
+inline constexpr std::array<std::uint32_t, 10> kMasterworkStatCategories{
+    199786516U,  // handling
+    482070447U,  // draw time
+    717646604U,  // reload speed
+    1238043140U, // accuracy
+    1392237582U, // range
+    1762223024U, // stability
+    1847616696U, // blast radius
+    2321551094U, // projectile speed
+    2458812152U, // impact
+    2827428737U, // charge time
+};
+
+/** Tier a masterwork plug reaches when the weapon holding it counts as masterworked. */
+inline constexpr std::uint8_t kMasterworkTier = 10;
+
+/**
+ * @return True when one definition is a weapon's masterwork plug at the top tier.
+ * @param definition Plug definition being asked about.
+ */
+[[nodiscard]] constexpr bool masterwork_plug(const Definition& definition) noexcept {
+    if (definition.actionStatValue < kMasterworkTier) {
+        return false;
+    }
+    for (const std::uint32_t category : kMasterworkStatCategories) {
+        if (definition.plugCategoryHash == category) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /** Native item tiers, as the definition's rarity byte encodes them. */
 enum class Tier : std::uint8_t {

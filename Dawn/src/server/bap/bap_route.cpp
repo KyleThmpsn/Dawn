@@ -113,6 +113,7 @@ void publish_account_mutation(Session& origin) noexcept {
         }
         peer.accountResyncGeneration = g_accountGeneration;
         peer.accountResyncArmed = true;
+        peer.accountResyncFailures = 0;
         ++armed;
     }
     std::array<char, core::log::kLineCapacity> line{};
@@ -619,6 +620,43 @@ state::activity::RetireResult retire_group_owned_activity(
     }
     ReleaseSRWLockExclusive(&g_lock);
     return retirement.result;
+}
+
+/**
+ * Arms every authenticated account peer after the loadout editor commits out of band.
+ * A BAP request publishes its own mutation and skips its origin, because that peer already
+ * carries the change. An editor apply has no origin session, so every peer is armed, the local
+ * Client included, and each one rebuilds from committed State on its next service poll.
+ */
+std::size_t publish_external_account_mutation() noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    g_accountGeneration = g_accountGeneration == (std::numeric_limits<std::uint64_t>::max)()
+                              ? 1
+                              : g_accountGeneration + 1;
+    std::size_t armed = 0;
+    for (auto& peer : g_sessions) {
+        if (peer.id == 0 || !peer.authenticated || !peer.queuez.family4Active) {
+            continue;
+        }
+        peer.accountResyncGeneration = g_accountGeneration;
+        peer.accountResyncArmed = true;
+        peer.accountResyncFailures = 0;
+        ++armed;
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    const int count = std::snprintf(line.data(),
+                                    line.size(),
+                                    "ev=queuez stage=editor_resync_arm result=ok generation=%llu "
+                                    "peers=%zu",
+                                    static_cast<unsigned long long>(g_accountGeneration),
+                                    armed);
+    if (count > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::debug,
+                         {line.data(), static_cast<std::size_t>(count)});
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return armed;
 }
 
 /** Nonblocking retry after a group lineage pin drops. */

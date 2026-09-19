@@ -23,7 +23,6 @@ void draw_title() noexcept {
     ImGui::EndGroup();
     ImGui::SameLine(0, 12.0F * scale);
     ImGui::TextDisabled(DAWN_DISPLAY_VERSION);
-    ImGui::Dummy({0, 4.0F * scale});
 }
 void draw_content(const navigation::Selection& selected) noexcept {
     if (!selected.moduleAvailable) { ImGui::TextDisabled("No pages are available."); return; }
@@ -64,9 +63,14 @@ bool render(bool visible) noexcept {
             ImGui::GetColorU32(ImGuiCol_CheckMark));
         draw_title();
         const auto selected = navigation::draw(snapshot());
-        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+        // A settings page opens with its own heading, but the loadout page opens with a second
+        // tab row, and a Spacing either side of the rule puts a hole between the two rows. The
+        // rule alone carries the boundary.
+        ImGui::Separator();
         const float contentHeight = (std::max)(1.0F,
-            ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing());
+            // The footer is one line of text, not a framed control, so reserving a frame
+            // height for it left dead panel under every page.
+            ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing());
         if (ImGui::BeginChild("##dawn_content", {0, contentHeight},
             ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoSavedSettings)) {
             draw_content(selected);

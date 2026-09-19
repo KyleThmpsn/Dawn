@@ -14,6 +14,240 @@ namespace {
 namespace packages = client::content::items::packages;
 namespace reader = middleware::content::packages::reader;
 namespace tables = middleware::content::packages::tables;
+
+
+/** Running state of the icon sweep, which runs through a plain function pointer. */
+struct IconSweep {
+    std::vector<IconRow>* icons{};
+    std::vector<std::string>* packages{};
+    /** Investment icon table rows by tag, so a swept icon can still report the row that names it. */
+    const std::unordered_map<std::uint32_t, std::uint32_t>* rows{};
+    std::unordered_map<std::string, std::uint16_t> families;
+    bool overflowed{};
+};
+
+/**
+ * Icon container rows holding the ammunition marks: one round in white, two in green, three in
+ * violet, which is how the game colours primary, special and heavy.
+ * No investment record points at them, so nothing can resolve them by lookup; the rows were found
+ * by browsing the icon table and are named here.
+ */
+constexpr std::uint32_t kPrimaryAmmoIconRow = 8380;
+constexpr std::uint32_t kSpecialAmmoIconRow = 8379;
+constexpr std::uint32_t kHeavyAmmoIconRow = 8381;
+
+/** Icons an installed directory may declare. Far above the ~16k the investment package carries. */
+constexpr std::size_t kIconSweepLimit = 400000;
+
+/** Orders icons by package, then row, then tag, which is the order the browser walks them in. */
+void sort_icons(std::vector<IconRow>& icons) {
+    std::sort(icons.begin(), icons.end(), [](const IconRow& a, const IconRow& b) {
+        if (a.package != b.package) return a.package < b.package;
+        if (a.row != b.row) return a.row < b.row;
+        return a.tag < b.tag;
+    });
+}
+
+/** Records one swept icon container against the package family that declares it. */
+bool visit_icon(void* context, const reader::ClassEntry& entry) noexcept {
+    auto& sweep = *static_cast<IconSweep*>(context);
+    try {
+        if (sweep.icons->size() >= kIconSweepLimit) {
+            sweep.overflowed = true;
+            return false;
+        }
+        // The family name is borrowed for the call only, and is ASCII, so it is narrowed here.
+        std::string family;
+        family.reserve(entry.packageFamily.size());
+        for (const wchar_t character : entry.packageFamily)
+            family.push_back(character < 0x80 ? static_cast<char>(character) : '?');
+        const auto [it, added] = sweep.families.try_emplace(
+            family, static_cast<std::uint16_t>(sweep.packages->size()));
+        if (added) sweep.packages->push_back(family);
+        const auto row = sweep.rows->find(entry.tag);
+        sweep.icons->push_back(
+            {entry.tag, row != sweep.rows->end() ? row->second : kNoIconRow, it->second});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+/**
+ * Investment stat string map, which pairs each stat with its localized name and icon index.
+ * These offsets are Sundial's, which resolves the same table for its armor stat row.
+ */
+constexpr std::size_t kStatStringMapSlot = 59;
+/**
+ * The investment root's stat definition table.
+ * A stat definition row leads with its own hash and sits at the same index as the stat string row
+ * that names it, so a hash resolves to a name through the two together.
+ */
+constexpr std::size_t kStatDefinitionSlot = 95;
+/**
+ * Stat definition hashes for the two stats the game titles gear by.
+ * The item's own record does not carry its primary stat anywhere this reader can reach: the stat
+ * block's 0x10 field only groups items by family, and no stat definition hash appears anywhere in
+ * an item's string blob. These two are read back from the definition table so the names stay the
+ * bank's own, and the kind decides which one an item is titled by.
+ */
+constexpr std::uint32_t kPowerStatHash = 0x735CF023U;
+constexpr std::uint32_t kDefenseStatHash = 0xE854FA8EU;
+constexpr std::uint32_t kStatDefinitionClass = 0x80807D09U;
+constexpr std::size_t kStatDefinitionRowSize = 32;
+constexpr std::size_t kItemPrimaryStatOffset = 0x10;
+constexpr std::uint32_t kStatStringMapClass = 0x80805CC9U;
+constexpr std::size_t kStatStringRowSize = 36;
+constexpr std::size_t kStatIconIndexOffset = 20;
+/** The localized stat name sits at the start of its string row. */
+constexpr std::size_t kStatNameOffset = 4;
+/** A stat with no icon stores this in place of an index. */
+constexpr std::uint16_t kNoStatIcon = 0xFFFFU;
+/**
+ * Stat groups and their display curves.
+ * The installed build stores investment values and shows them through a group's curve, so these
+ * are what turn a stored range into the range on the game's tooltip. Offsets are Sundial's.
+ */
+constexpr std::size_t kStatGroupMapSlot = 60;
+constexpr std::uint32_t kStatGroupClass = 0x80805D02U;
+constexpr std::size_t kStatGroupRowSize = 0x38;
+constexpr std::size_t kStatGroupScaledOffset = 0x10;
+constexpr std::size_t kStatGroupMaximumOffset = 0x30;
+constexpr std::uint32_t kScaledStatClass = 0x80805D06U;
+constexpr std::size_t kScaledStatRowSize = 0x18;
+constexpr std::size_t kScaledStatNumericOffset = 1;
+constexpr std::size_t kScaledStatLinearOffset = 3;
+constexpr std::size_t kScaledStatCurveOffset = 0x08;
+constexpr std::uint32_t kStatCurveClass = 0x80807D1AU;
+constexpr std::size_t kStatCurveRowSize = 0x08;
+/**
+ * The finished sandbox-perk catalog, which is what an item's sandbox perk indices index.
+ * Each primary row carries the perk hash, then a self-relative pointer to its detail row, whose
+ * description reference sits eight bytes in. Offsets and classes are Sundial's.
+ */
+constexpr std::size_t kSandboxPerkTableSlot = 71;
+constexpr std::uint32_t kSandboxPerkRowClass = 0x80805C9DU;
+constexpr std::size_t kSandboxPerkRowSize = 0x18;
+constexpr std::size_t kSandboxPerkDetailPointerOffset = 0x08;
+constexpr std::size_t kSandboxPerkDescriptionOffset = 0x08;
+/** The installed catalog carries 2481 rows; a wild count is rejected. */
+constexpr std::uint64_t kSandboxPerkLimit = 65536;
+/**
+ * The investment root's per-index sandbox-perk metadata, row-aligned with the catalog above.
+ * Byte six of each row is the liveness the native registry checks. Sundial's slot and offset.
+ */
+constexpr std::size_t kSandboxPerkMetadataSlot = 106;
+constexpr std::uint32_t kSandboxPerkMetadataRowClass = 0x80807AAEU;
+constexpr std::size_t kSandboxPerkMetadataRowSize = 8;
+constexpr std::size_t kSandboxPerkLiveOffset = 6;
+/** An item names its stat group through a typed resource pointer in its strings blob. */
+constexpr std::size_t kItemStatGroupPointerOffset = 0x70;
+constexpr std::uint32_t kItemStatGroupResourceClass = 0x80805CF1U;
+constexpr std::size_t kItemStatGroupIndexOffset = 0x14;
+/** No installed group carries more rows than these, so a wild count is rejected. */
+constexpr std::uint64_t kStatGroupLimit = 512;
+constexpr std::uint64_t kCurvePointLimit = 256;
+
+/**
+ * Reads one item's stat group index out of its strings blob.
+ * @param itemStrings Whole item strings definition.
+ * @return The group index, or `kNoStatGroup` when the item names none.
+ */
+/**
+ * @return The ammunition class stored in the item's string definition, or none.
+ * The typed field sits at 0x140 behind a class marker at 0x13C; a definition without the marker
+ * carries no classification. Zero is an inherited value a few stock items use, so it reads as none.
+ */
+Ammo read_ammo(std::span<const std::byte> itemStrings) noexcept {
+    constexpr std::size_t kClassOffset = 0x13C, kTypeOffset = 0x140;
+    constexpr std::uint32_t kAmmoClass = 0x80805D1AU;
+    std::uint32_t marker{};
+    std::uint16_t value{};
+    if (!strings::read(itemStrings, kClassOffset, marker) || marker != kAmmoClass
+        || !strings::read(itemStrings, kTypeOffset, value)) return Ammo::none;
+    switch (value) {
+    case 1: return Ammo::primary;
+    case 2: return Ammo::special;
+    case 3: return Ammo::heavy;
+    default: return Ammo::none;
+    }
+}
+
+/** @return Offset of the item's stat block resource, or zero when it names none. */
+std::size_t stat_block_resource(std::span<const std::byte> itemStrings) noexcept {
+    std::int64_t relative{};
+    if (!strings::read(itemStrings, kItemStatGroupPointerOffset, relative) || relative == 0) return 0;
+    const auto resource = static_cast<std::int64_t>(kItemStatGroupPointerOffset) + relative;
+    if (resource < 4 || static_cast<std::size_t>(resource) >= itemStrings.size()) return 0;
+    std::uint32_t resourceClass{};
+    if (!strings::read(itemStrings, static_cast<std::size_t>(resource) - 4, resourceClass)
+        || resourceClass != kItemStatGroupResourceClass) return 0;
+    return static_cast<std::size_t>(resource);
+}
+
+std::uint16_t read_stat_group_index(std::span<const std::byte> itemStrings) noexcept {
+    std::int64_t relative{};
+    if (!strings::read(itemStrings, kItemStatGroupPointerOffset, relative) || relative == 0) return kNoStatGroup;
+    const auto resource = static_cast<std::int64_t>(kItemStatGroupPointerOffset) + relative;
+    if (resource < 4 || static_cast<std::size_t>(resource) >= itemStrings.size()) return kNoStatGroup;
+    std::uint32_t resourceClass{};
+    if (!strings::read(itemStrings, static_cast<std::size_t>(resource) - 4, resourceClass)
+        || resourceClass != kItemStatGroupResourceClass) return kNoStatGroup;
+    std::int32_t index{};
+    if (!strings::read(itemStrings, static_cast<std::size_t>(resource) + kItemStatGroupIndexOffset, index)
+        || index < 0 || index >= static_cast<std::int32_t>(kNoStatGroup)) return kNoStatGroup;
+    return static_cast<std::uint16_t>(index);
+}
+
+/**
+ * Reads every installed stat group and the display curves it carries.
+ * @param table Whole stat group table bytes.
+ * @param rows Array descriptor for the group rows.
+ * @param output Receives one entry per group, in table order.
+ * @return True when every group and curve decodes.
+ */
+bool read_stat_groups(std::span<const std::byte> table, const tables::Array& rows,
+                      std::vector<StatGroup>& output) {
+    if (rows.elementClass != kStatGroupClass || rows.count > kStatGroupLimit) return false;
+    output.assign(static_cast<std::size_t>(rows.count), StatGroup{});
+    for (std::uint64_t group = 0; group < rows.count; ++group) {
+        const std::size_t row = rows.dataOffset + static_cast<std::size_t>(group) * kStatGroupRowSize;
+        StatGroup& target = output[static_cast<std::size_t>(group)];
+        if (!strings::read(table, row + kStatGroupMaximumOffset, target.maximumValue)) return false;
+        tables::Array scaledRows{};
+        if (!tables::find_array_at(table, row + kStatGroupScaledOffset, scaledRows)) continue;
+        if (scaledRows.count == 0) continue;
+        if (scaledRows.elementClass != kScaledStatClass || scaledRows.count > kStatGroupLimit) return false;
+        for (std::uint64_t scaled = 0; scaled < scaledRows.count; ++scaled) {
+            const std::size_t at = scaledRows.dataOffset + static_cast<std::size_t>(scaled) * kScaledStatRowSize;
+            std::uint8_t definitionIndex{};
+            std::uint8_t numeric{};
+            std::uint8_t linear{};
+            if (!strings::read(table, at, definitionIndex)
+                || !strings::read(table, at + kScaledStatNumericOffset, numeric)
+                || !strings::read(table, at + kScaledStatLinearOffset, linear)) return false;
+            ScaledStat entry;
+            entry.definitionIndex = definitionIndex;
+            entry.numeric = numeric == 1;
+            entry.linear = linear == 1;
+            tables::Array curveRows{};
+            if (tables::find_array_at(table, at + kScaledStatCurveOffset, curveRows) && curveRows.count != 0) {
+                if (curveRows.elementClass != kStatCurveClass || curveRows.count > kCurvePointLimit) return false;
+                entry.curve.reserve(static_cast<std::size_t>(curveRows.count));
+                for (std::uint64_t point = 0; point < curveRows.count; ++point) {
+                    const std::size_t p = curveRows.dataOffset + static_cast<std::size_t>(point) * kStatCurveRowSize;
+                    StatDisplayPoint value{};
+                    // The first value is the stored input and the second is what the game shows.
+                    if (!strings::read(table, p, value.investment)
+                        || !strings::read(table, p + 4, value.display)) return false;
+                    entry.curve.push_back(value);
+                }
+            }
+            target.scaled.push_back(std::move(entry));
+        }
+    }
+    return true;
+}
 struct ReadScope {
     reader::BlockKeys keys{};
     std::unique_ptr<reader::Scratch> scratch{std::make_unique<reader::Scratch>()};
@@ -37,15 +271,22 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
     reader::Source source{directory.chars.data(), &scope.keys};
     std::array<std::uint32_t, packages::kContainerCandidates> globalsTags{};
     std::size_t globalsCount{};
-    std::vector<std::byte> globals, stringMap, localizedIndex, iconTable;
-    tables::Array stringRows{}, localizedRows{}, iconRows{};
+    std::vector<std::byte> globals, stringMap, localizedIndex, iconTable, statStrings, statGroupTable;
+    tables::Array stringRows{}, localizedRows{}, iconRows{}, statStringRows{}, statGroupRows{};
     bool located = false;
     if (packages::investment_globals_tags(globalsTags, globalsCount)) {
         for (std::size_t i = 0; i < globalsCount && !located; ++i) {
-            std::uint32_t stringTag{}, localizedTag{}, iconTag{};
+            std::uint32_t stringTag{}, localizedTag{}, iconTag{}, statStringTag{}, statGroupTag{};
             located = reader::read_tag(source, *scope.scratch, globalsTags[i], globals)
                 && tables::child_tag(globals, 33, stringTag) && tables::child_tag(globals, 72, localizedTag)
                 && tables::child_tag(globals, 75, iconTag)
+                && tables::child_tag(globals, kStatStringMapSlot, statStringTag)
+                && reader::read_tag(source, *scope.scratch, statStringTag, statStrings)
+                && tables::find_array_at(statStrings, 8, statStringRows)
+                && statStringRows.elementClass == kStatStringMapClass
+                && tables::child_tag(globals, kStatGroupMapSlot, statGroupTag)
+                && reader::read_tag(source, *scope.scratch, statGroupTag, statGroupTable)
+                && tables::find_array_at(statGroupTable, 8, statGroupRows)
                 && reader::read_tag(source, *scope.scratch, stringTag, stringMap)
                 && reader::read_tag(source, *scope.scratch, localizedTag, localizedIndex)
                 && reader::read_tag(source, *scope.scratch, iconTag, iconTable)
@@ -83,6 +324,112 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
     build_data::constants::InvestmentConstants constants{};
     if (!build_data::find_investment_constants(constants)) { error = "Armor stat definitions are not ready."; return false; }
     result.statRows = constants.characterStatRows;
+    // Stat names come from the same rows as the icons, but need the localized resolver above.
+    for (std::uint64_t row = 0; row < statStringRows.count; ++row) {
+        const std::size_t at = statStringRows.dataOffset + static_cast<std::size_t>(row) * kStatStringRowSize;
+        std::string name = resolve(statStrings, at + kStatNameOffset);
+        if (!name.empty()) result.statNames.emplace(static_cast<std::uint16_t>(row), std::move(name));
+    }
+    // Stored stat values are shown through their group's curve, so the groups are decoded once
+    // and every displayed number goes through them.
+    if (!read_stat_groups(statGroupTable, statGroupRows, result.statGroups)) result.statGroups.clear();
+    // Each character stat names an icon in the same container table the items use, so the totals
+    // row can show the game's own stat icons instead of names alone.
+    for (std::size_t i = 0; i < result.statRows.size(); ++i) {
+        const std::size_t row = result.statRows[i];
+        std::uint16_t icon{};
+        if (row >= statStringRows.count) continue;
+        if (!strings::read(std::span<const std::byte>(statStrings),
+                           statStringRows.dataOffset + row * kStatStringRowSize + kStatIconIndexOffset, icon)
+            || icon == kNoStatIcon || icon >= iconRows.count) continue;
+        (void)strings::read(std::span<const std::byte>(iconTable),
+                            iconRows.dataOffset + icon * 0x18 + 0x10, result.statIconTags[i]);
+    }
+    // Each stat definition leads with the hash an item names its primary stat by, and sits at the
+    // same index as the stat string row that names it.
+    std::unordered_map<std::uint32_t, std::uint16_t> primaryStatRows;
+    {
+        std::vector<std::byte> investmentRoot, statDefinitions;
+        std::uint32_t rootTag{}, definitionTag{};
+        tables::Array definitionRows{};
+        if (tables::child_tag(globals, 0, rootTag)
+            && reader::read_tag(source, *scope.scratch, rootTag, investmentRoot)
+            && tables::slot_tag(investmentRoot, kStatDefinitionSlot, definitionTag)
+            && reader::read_tag(source, *scope.scratch, definitionTag, statDefinitions)
+            && tables::find_array_at(statDefinitions, 8, definitionRows)
+            && definitionRows.elementClass == kStatDefinitionClass) {
+            for (std::uint64_t row = 0; row < definitionRows.count; ++row) {
+                std::uint32_t hash{};
+                if (strings::read(std::span<const std::byte>(statDefinitions),
+                                  definitionRows.dataOffset
+                                      + static_cast<std::size_t>(row) * kStatDefinitionRowSize,
+                                  hash)
+                    && hash != 0)
+                    primaryStatRows.emplace(hash, static_cast<std::uint16_t>(row));
+            }
+        }
+    }
+
+    // Nothing names an icon, so the icon browser is left to find one by eye. The investment table
+    // is what loads here; the sweep of every other package that `sweep_icons` runs is deferred
+    // until the browser asks, since it reads every package's entry table.
+    {
+        const auto icon_tag_at = [&](std::uint32_t row) {
+            std::uint32_t tag{};
+            if (row < iconRows.count)
+                (void)strings::read(std::span<const std::byte>(iconTable),
+                                    iconRows.dataOffset + row * 0x18 + 0x10, tag);
+            return tag;
+        };
+        result.ammoIconTags[static_cast<std::size_t>(Ammo::primary)] = icon_tag_at(kPrimaryAmmoIconRow);
+        result.ammoIconTags[static_cast<std::size_t>(Ammo::special)] = icon_tag_at(kSpecialAmmoIconRow);
+        result.ammoIconTags[static_cast<std::size_t>(Ammo::heavy)] = icon_tag_at(kHeavyAmmoIconRow);
+
+        std::unordered_map<std::uint32_t, std::uint32_t> investment;
+        std::uint32_t sample = 0;
+        for (std::uint32_t row = 0; row < static_cast<std::uint32_t>(iconRows.count); ++row) {
+            std::uint32_t tag{};
+            if (!strings::read(std::span<const std::byte>(iconTable),
+                               iconRows.dataOffset + row * 0x18 + 0x10, tag) || tag == 0) continue;
+            investment.emplace(tag, row);
+            if (sample == 0) sample = tag;
+        }
+        // The entry table records every tag's class, so one investment icon names the class the
+        // rest of the installed packages would be swept for.
+        std::vector<std::byte> probe;
+        if (sample != 0) (void)reader::read_tag(source, *scope.scratch, sample, probe, result.iconClass);
+        result.iconPackages.emplace_back("investment");
+        for (const auto& [tag, row] : investment) result.icons.push_back({tag, row, 0});
+        sort_icons(result.icons);
+        result.investmentIconRows = std::move(investment);
+    }
+    // The build stores its character stats in its own order. The game lists them in the order
+    // `kStats` names, so each of those names is matched to the row that carries it; a name the
+    // bank does not resolve keeps its storage position rather than displacing one that did.
+    {
+        std::array<bool, 6> taken{};
+        std::array<bool, 6> placed{};
+        for (std::size_t wanted = 0; wanted < result.statOrder.size(); ++wanted) {
+            for (std::size_t row = 0; row < result.statRows.size(); ++row) {
+                if (taken[row]) continue;
+                const auto name = result.statNames.find(result.statRows[row]);
+                if (name == result.statNames.end() || name->second != kStats[wanted]) continue;
+                result.statOrder[wanted] = row;
+                taken[row] = placed[wanted] = true;
+                break;
+            }
+        }
+        // The bank leaves one character stat unnamed, so it never matches by name. It keeps its own
+        // place in the display order and takes whichever row is left rather than falling to the end.
+        std::size_t spare = 0;
+        for (std::size_t wanted = 0; wanted < result.statOrder.size(); ++wanted) {
+            if (placed[wanted]) continue;
+            while (spare < taken.size() && taken[spare]) ++spare;
+            if (spare >= taken.size()) break;
+            result.statOrder[wanted] = spare;
+            taken[spare] = true;
+        }
+    }
     const auto count = build_data::item_definition_count();
     std::vector<std::byte> itemStrings, iconDefinition;
     for (std::size_t i = 0; i < count && !cancel.load(); ++i) {
@@ -98,6 +445,7 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             item.kind = item.slot <= 2 ? GearKind::weapon : item.slot <= 7 ? GearKind::armor
                 : item.slot == 11 ? GearKind::subclass : item.slot < account::inventory::kEquipmentSlotCount ? GearKind::cosmetic : GearKind::other;
         }
+        item.element = element_of(item.detail);
         if (item.slot < account::inventory::kEquipmentSlotCount
             && item.detail.instancedDefinitionState == build_data::items::details::InstancedDefinitionState::instanced) item.plug = false;
         if (auto it = tags.find(item.definition.definitionHash); it != tags.end()
@@ -105,6 +453,15 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             item.name = resolve(itemStrings, 0x84);
             item.type = resolve(itemStrings, 0x90);
             item.description = resolve(itemStrings, 0x98);
+            item.statGroupIndex = read_stat_group_index(std::span<const std::byte>(itemStrings));
+            item.ammo = read_ammo(std::span<const std::byte>(itemStrings));
+            const auto titledBy = item.kind == GearKind::weapon  ? kPowerStatHash
+                                  : item.kind == GearKind::armor ? kDefenseStatHash
+                                                                 : 0U;
+            if (titledBy != 0) {
+                const auto named = primaryStatRows.find(titledBy);
+                if (named != primaryStatRows.end()) item.primaryStatRow = named->second;
+            }
             std::uint16_t icon{};
             if (strings::read(std::span<const std::byte>(itemStrings), 0x80, icon) && icon < iconRows.count)
                 (void)strings::read(std::span<const std::byte>(iconTable), iconRows.dataOffset + icon * 0x18 + 0x10, item.iconTag);
@@ -137,6 +494,76 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
         progress.store(static_cast<unsigned>((i + 1) * 100 / count));
     }
     if (cancel.load()) { error = "Catalog loading cancelled."; return false; }
+    // A mod's own strings often carry no description: what it does is written on the sandbox
+    // perks it calls, in the finished sandbox-perk catalog. Each primary row points at a detail
+    // row whose description reference sits eight bytes in. The layout is Sundial's.
+    {
+        std::vector<std::byte> perkTable;
+        std::uint32_t perkTag{};
+        tables::Array perkRows{};
+        std::vector<std::string> perkDescriptions;
+        if (tables::child_tag(globals, kSandboxPerkTableSlot, perkTag)
+            && reader::read_tag(source, *scope.scratch, perkTag, perkTable)
+            && tables::find_array_at(perkTable, 8, perkRows)
+            && perkRows.elementClass == kSandboxPerkRowClass
+            && perkRows.count <= kSandboxPerkLimit) {
+            perkDescriptions.resize(static_cast<std::size_t>(perkRows.count));
+            for (std::uint64_t row = 0; row < perkRows.count; ++row) {
+                const std::size_t at = perkRows.dataOffset + static_cast<std::size_t>(row) * kSandboxPerkRowSize;
+                std::int64_t pointer{};
+                std::size_t detail{};
+                if (!strings::read(std::span<const std::byte>(perkTable), at + kSandboxPerkDetailPointerOffset, pointer)
+                    || pointer == 0
+                    || !strings::relative(std::span<const std::byte>(perkTable), at + kSandboxPerkDetailPointerOffset, detail)) continue;
+                perkDescriptions[static_cast<std::size_t>(row)] = resolve(perkTable, detail + kSandboxPerkDescriptionOffset);
+            }
+        }
+        // The root's per-index perk metadata says which perks the native registry treats as
+        // live; a plug whose perks are all declaration-only is marked inert.
+        std::vector<bool> live;
+        {
+            std::vector<std::byte> rootBlob, metadata;
+            std::uint32_t rootTag{}, metadataTag{};
+            tables::Array rows{};
+            if (tables::child_tag(globals, 0, rootTag)
+                && reader::read_tag(source, *scope.scratch, rootTag, rootBlob)
+                && tables::slot_tag(rootBlob, kSandboxPerkMetadataSlot, metadataTag)
+                && reader::read_tag(source, *scope.scratch, metadataTag, metadata)
+                && tables::find_array_at(metadata, 8, rows)
+                && rows.elementClass == kSandboxPerkMetadataRowClass
+                && rows.count <= kSandboxPerkLimit) {
+                live.resize(static_cast<std::size_t>(rows.count));
+                for (std::uint64_t row = 0; row < rows.count; ++row) {
+                    std::uint8_t flag{};
+                    const std::size_t at = rows.dataOffset + static_cast<std::size_t>(row) * kSandboxPerkMetadataRowSize;
+                    if (strings::read(std::span<const std::byte>(metadata), at + kSandboxPerkLiveOffset, flag))
+                        live[static_cast<std::size_t>(row)] = flag != 0;
+                }
+            }
+        }
+        for (auto& item : result.items) {
+            if (!item.plug) continue;
+            const std::size_t declared = (std::min)(static_cast<std::size_t>(item.detail.sandboxPerkCount), item.detail.sandboxPerks.size());
+            if (declared > 0 && !live.empty()) {
+                bool anyLive = false;
+                for (std::size_t i = 0; i < declared; ++i) {
+                    const std::size_t index = item.detail.sandboxPerks[i];
+                    anyLive = anyLive || (index < live.size() && live[index]);
+                }
+                item.inert = !anyLive;
+            }
+            if (!item.description.empty()) continue;
+            const std::size_t perks = (std::min)(static_cast<std::size_t>(item.detail.sandboxPerkCount), item.detail.sandboxPerks.size());
+            for (std::size_t i = 0; i < perks; ++i) {
+                const std::size_t index = item.detail.sandboxPerks[i];
+                if (index >= perkDescriptions.size()) continue;
+                const std::string& text = perkDescriptions[index];
+                if (text.empty() || item.description.find(text) != std::string::npos) continue;
+                if (!item.description.empty()) item.description += "\n\n";
+                item.description += text;
+            }
+        }
+    }
     // Sundial's parallel subclass displays provide localized ability and path names.
     std::vector<std::byte> root, listIndex, displays, list, displayRecord, abilityDisplay;
     std::uint32_t tag{}; tables::Array listRows{}, displayRows{};
@@ -221,6 +648,26 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
     }
     result.finish();
     output = std::move(result);
+    return true;
+}
+bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages) {
+    icons.clear();
+    packages.clear();
+    if (catalog.iconClass == 0) return false;
+    ReadScope scope;
+    core::path::Buffer directory{};
+    if (!packages::package_directory(directory) || !packages::collect_keys(scope.keys)) return false;
+    IconSweep sweep{&icons, &packages, &catalog.investmentIconRows, {}, false};
+    reader::ScanResult scan{};
+    const bool complete =
+        reader::scan_class_entries(directory.chars.data(), catalog.iconClass, &visit_icon, &sweep, scan);
+    reader::release_caches();
+    if (!complete && !sweep.overflowed) {
+        icons.clear();
+        packages.clear();
+        return false;
+    }
+    sort_icons(icons);
     return true;
 }
 }

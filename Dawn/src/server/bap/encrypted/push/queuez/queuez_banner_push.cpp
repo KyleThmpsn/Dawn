@@ -433,6 +433,7 @@ bool append_account_resync_appearance_notification(
     const state::AccountState account = state::account_snapshot();
     const std::uint64_t selected = state::account::selected_character_soid(account);
     if (selected == 0) {
+        report_skip("resync_no_selected");
         return false;
     }
     if (before.family0Character != selected) {
@@ -446,14 +447,28 @@ bool append_account_resync_appearance_notification(
             break;
         }
     }
+    if (characterIndex >= account.characterCount) {
+        report_skip("resync_no_character");
+        return false;
+    }
+    // A resync may carry a changed emblem, and the banner consumers only notice an emblem through
+    // the Family-0 anchor, so the anchor rides along as it does on an emblem equip.
+    constexpr std::uint8_t kEmblemEquipmentSlot = 13;
     queuez::CharacterAppearanceRefresh refresh{};
     snapshot::Prepared prepared{};
-    if (characterIndex >= account.characterCount
-        || !queuez::stage_character_appearance_refresh(before, selected, refresh)
-        || !snapshot::prepare_character_appearance_refresh(
-            scratch, refresh, account.characters[characterIndex], characterIndex, 0, true, prepared)
-        || !append_appearance_frame(
+    if (!queuez::stage_character_appearance_refresh(before, selected, refresh)
+        || !snapshot::prepare_character_appearance_refresh(scratch,
+                                                          refresh,
+                                                          account.characters[characterIndex],
+                                                          characterIndex,
+                                                          kEmblemEquipmentSlot,
+                                                          true,
+                                                          prepared)) {
+        return false;
+    }
+    if (!append_appearance_frame(
             scratch, refresh, prepared, "peer_resync_appearance", key, nonce, response, written)) {
+        report_fail("peer_resync_appearance", "frame");
         return false;
     }
     after = refresh.after;

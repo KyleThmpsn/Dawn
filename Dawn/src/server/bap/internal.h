@@ -251,7 +251,17 @@ struct Session {
     bool accountMutationPublished{};
     /** True while another peer's account mutation still needs a full local refresh. */
     bool accountResyncArmed{};
+    /** Consecutive failed attempts at the armed refresh; the arm is dropped past a bound. */
+    std::uint8_t accountResyncFailures{};
 };
+
+/**
+ * Failed refresh attempts after which the arm is dropped rather than retried every tick.
+ * A refresh that cannot be built blocks every other deferred push for as long as it stays armed,
+ * and the Client, starved of all of them, gives up its session. Dropping the arm leaves the
+ * Client on its last image until the next sign-in, which it survives.
+ */
+inline constexpr std::uint8_t kAccountResyncFailureLimit = 16;
 
 // clear_session and authentication retirement securely wipe the whole object.
 // Assignment restores data/sentinels, not hidden vtable or ownership machinery.

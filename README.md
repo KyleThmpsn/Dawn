@@ -209,22 +209,26 @@ reported backup path with `-Restore` before trying another installation.
 
 ## Loadout studio
 
-Open **Loadout** in the in-game menu to edit your character and equipment. The native editor adapts
-Sundial's catalog, perk selection, localization, and preview layouts to Dawn's account storage.
-Parhelion is not required.
+Open **Loadout** in the in-game menu to edit your character and equipment. Click an item to edit
+it in the side panel. See [Sundial](#sundial) under Acknowledgements for what Dawn adapts from it.
 
-- Edit character identity, progression, equipment, subclasses, and character/account inventories.
-- Choose ability combinations for all nine subclasses, including trees, jumps, grenades, and
-  class abilities.
-- Browse weapons, armor, cosmetics, and perks with names and preview artwork from your installed
-  game packages. Search, filter by rarity or type, and sort the collection.
-- Give and equip items, adjust power and quantities, lock items, edit sockets, and randomize
-  selected equipment slots. Expanded perk scopes allow unconventional combinations.
+- Edit character identity, progression, equipment, subclasses, and inventories.
+- Choose a subclass and attunement, which sets the super and melee, plus jump, grenade, and class
+  ability.
+- Browse weapons, armor, cosmetics, perks, and materials with artwork and descriptions from your
+  packages.
+- Give, equip, lock, and randomize items; set power and quantities; edit sockets, with wider perk
+  scopes for unconventional combinations.
+- Drag an armor stat bar to set a target. Letting go rolls the closest spread the game ships.
 
-Changes remain in a draft until **Save changes**. Saving creates a backup in `Dawn/editor-backups`
-and checks inventory limits and whether the account changed while you were editing.
-**Restart the game after saving** to load the edited account. Reload asks before discarding an
-unsaved draft. Inventory capacity and one exotic per gear category are preserved.
+Edits apply to the running game, with no restart. **Apply live** is on by default. Turn it off to
+build a draft and commit it with **Apply**, or discard it with **Reload**. The editor checks
+inventory limits, one exotic per gear category, and whether the game changed the account under
+you. The first apply of a session backs up your player database to `Dawn/editor-backups`.
+
+Most edits show up in game within a moment. Character identity is committed straight away, but
+the Guardian you are playing may keep its look until you sign in again. Changing class needs
+matching armor and a subclass before it applies.
 
 ## Missions
 
@@ -338,7 +342,9 @@ the character and inventory editor, full perk selection, item-artwork research, 
 and armor-stat tools that informed Dawn's native loadout integration.
 
 Dawn adapts Sundial's localized investment string and icon readers, class-restriction hash lists,
-subclass ability displays and path selection, and five plug-selection scopes. Those adaptations
+subclass ability displays and attunement selection, five plug-selection scopes, the armor-stat
+allocation socket model, and the finished sandbox-perk catalog layout that supplies mod
+descriptions and perk liveness. Those adaptations
 are distributed under **GPL-3.0-only**. The pinned upstream revision, attribution, and license are
 included in [NOTICE.md](Dawn/vendor/sundial/NOTICE.md) and the
 [Sundial license](Dawn/vendor/sundial/LICENSE).

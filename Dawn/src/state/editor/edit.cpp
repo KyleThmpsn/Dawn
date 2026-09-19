@@ -2,7 +2,9 @@
 #include "edit.h"
 #include "../persistence/persistence.h"
 #include "../account/inventory/placement.h"
+#include "../equipment/light/definition.h"
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <memory>
 
@@ -11,7 +13,10 @@ namespace inv = account::inventory;
 namespace {
 Stats contribution(const CatalogItem& item, const Catalog& catalog) {
     Stats result{};
-    for (std::size_t i = 0; i < item.detail.statCount; ++i)
+    // The detail catalog does not bound this count, and a cache record carries whatever it was
+    // written with, so the array's own size is the only limit that can be relied on.
+    const std::size_t count = (std::min)(static_cast<std::size_t>(item.detail.statCount), item.detail.stats.size());
+    for (std::size_t i = 0; i < count; ++i)
         for (std::size_t j = 0; j < result.size(); ++j)
             if (item.detail.stats[i].row == catalog.statRows[j]) result[j] += item.detail.stats[i].value;
     return result;
@@ -20,12 +25,20 @@ void sum(Stats& into, const Stats& values, int sign = 1) {
     for (std::size_t i = 0; i < into.size(); ++i) into[i] += sign * values[i];
 }
 bool nonzero(const Stats& values) { return std::any_of(values.begin(), values.end(), [](int v) { return v != 0; }); }
+// The row generation is handed out, then advanced past. The family-four character encoder rejects
+// a loadout whose item carries the serial the counter still points at, so the value assigned here
+// must stay strictly below it. This matches how the runtime grants a serial on acquisition.
 bool bump(CharacterState& character, Item& item) {
     if (character.nextInventorySerial >= static_cast<std::uint32_t>((std::numeric_limits<std::int32_t>::max)())) return false;
     // The character wire record requires every item revision to be strictly below next.
     item.mutationSerial = static_cast<std::int32_t>(character.nextInventorySerial++);
     return true;
 }
+// Repairs a character whose counter does not lead every row it owns. Accounts saved by the editor
+// before the serial fix carry one such row, and the character object refuses to encode until the
+// counter passes it, which leaves the game unable to publish that character at all. The encoder
+// also refuses a counter below the number of rows it publishes, and that count is every equipped
+// item plus every stored one, not the stored ones alone.
 bool prepare_serial_counter(CharacterState& character) {
     auto next = character.nextInventorySerial;
     std::uint32_t count = 0;
@@ -40,7 +53,6 @@ bool prepare_serial_counter(CharacterState& character) {
         if (!include(character.inventory.values[i])) return false;
     next = (std::max)(next, count);
     if (next > static_cast<std::uint32_t>(INT32_MAX)) return false;
-    // Repair drafts loaded from the old editor without rewriting any item or revision.
     character.nextInventorySerial = next;
     return true;
 }
@@ -105,6 +117,14 @@ bool set_plug(Item& item, const Catalog& catalog, std::size_t lane, std::uint16_
     item = staged;
     return true;
 }
+std::string_view stat_label(const Catalog& catalog, std::size_t index) noexcept {
+    if (index < catalog.statRows.size()) {
+        const auto found = catalog.statNames.find(catalog.statRows[index]);
+        if (found != catalog.statNames.end() && !found->second.empty()) return found->second;
+    }
+    return index < std::size(kStats) ? kStats[index] : std::string_view{};
+}
+
 Stats item_stats(const Item& item, const Catalog& catalog) {
     const auto* definition = catalog.find(item.definitionHash);
     if (!definition) return {};
@@ -113,6 +133,80 @@ Stats item_stats(const Item& item, const Catalog& catalog) {
     if (materialize(resolved, catalog)) for (std::size_t i = 0; i < resolved.sockets.plugCount; ++i)
         if (resolved.sockets.plugs[i]) if (const auto* plug = catalog.find(*resolved.sockets.plugs[i])) sum(result, contribution(*plug, catalog));
     return result;
+}
+/**
+ * Armor 2.0 rolls its stats through two pairs of allocation sockets: two carrying a spread over
+ * the top three stats (Mobility, Resilience, Recovery) and two over the bottom three. These are
+ * the socket types the game gives them; Sundial identifies them the same way.
+ */
+constexpr std::uint16_t kTopAllocationSocketTypes[]{760, 761};
+constexpr std::uint16_t kBottomAllocationSocketTypes[]{762, 763};
+enum class Allocation { none, top, bottom };
+Allocation allocation_of_socket(std::uint16_t socketType) {
+    for (auto type : kTopAllocationSocketTypes) if (type == socketType) return Allocation::top;
+    for (auto type : kBottomAllocationSocketTypes) if (type == socketType) return Allocation::bottom;
+    return Allocation::none;
+}
+/** @return True when a plug spreads its stats over one allocation group and nothing outside it. */
+bool allocation_plug(const CatalogItem& plug, const Catalog& catalog, Allocation group) {
+    const Stats values = contribution(plug, catalog);
+    bool inside = false;
+    for (std::size_t shown = 0; shown < values.size(); ++shown) {
+        const bool top = shown < 3;
+        const int value = values[catalog.statOrder[shown]];
+        if (value == 0) continue;
+        if ((group == Allocation::top) != top) return false;
+        inside = true;
+    }
+    return inside;
+}
+/**
+ * @return The stat plugs one lane may take in place of the plug it holds.
+ * An allocation socket draws on every allocation plug of its group the installed armor ever
+ * rolls, since its own pool holds nothing but the roll it came with. Any other stat-bearing
+ * socket stays inside its own pool: a stat mod trades for another stat mod, an archetype for
+ * another archetype.
+ */
+std::vector<std::uint16_t> stat_choices(const CatalogItem& definition, std::size_t lane, const CatalogItem& current, const Catalog& catalog) {
+    std::vector<std::uint16_t> choices;
+    const Allocation group = lane < definition.detail.socketTypes.size()
+        ? allocation_of_socket(definition.detail.socketTypes[lane]) : Allocation::none;
+    if (group != Allocation::none) {
+        for (auto type : group == Allocation::top ? kTopAllocationSocketTypes : kBottomAllocationSocketTypes) {
+            const auto pool = catalog.socketPools.find(type);
+            if (pool == catalog.socketPools.end()) continue;
+            for (auto id : pool->second) {
+                const auto* choice = catalog.index(id);
+                if (choice && choice->definition.plugCategoryHash == current.definition.plugCategoryHash
+                    && allocation_plug(*choice, catalog, group)) choices.push_back(id);
+            }
+        }
+        choices.push_back(current.definition.definitionIndex);
+        std::sort(choices.begin(), choices.end());
+        choices.erase(std::unique(choices.begin(), choices.end()), choices.end());
+        return choices;
+    }
+    for (auto id : definition.compatible[lane]) {
+        const auto* choice = catalog.index(id);
+        if (choice && choice->definition.plugCategoryHash == current.definition.plugCategoryHash
+            && nonzero(contribution(*choice, catalog))) choices.push_back(id);
+    }
+    return choices;
+}
+bool adjustable_stats(const Item& item, const Catalog& catalog) {
+    const auto* definition = catalog.find(item.definitionHash);
+    if (!definition || definition->kind != GearKind::armor) return false;
+    Item resolved = item;
+    if (!materialize(resolved, catalog)) return false;
+    for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane) {
+        const auto* current = resolved.sockets.plugs[lane] ? catalog.find(*resolved.sockets.plugs[lane]) : nullptr;
+        if (!current || !nonzero(contribution(*current, catalog))) continue;
+        for (auto id : stat_choices(*definition, lane, *current, catalog)) {
+            const auto* choice = catalog.index(id);
+            if (choice && choice->definition.definitionHash != current->definition.definitionHash) return true;
+        }
+    }
+    return false;
 }
 bool adjust_stats(Item& item, const Catalog& catalog, const Stats& targets, Stats& achieved) {
     const auto* definition = catalog.find(item.definitionHash);
@@ -130,14 +224,10 @@ bool adjust_stats(Item& item, const Catalog& catalog, const Stats& targets, Stat
     for (std::size_t lane = 0; lane < original.sockets.plugCount; ++lane) {
         const auto* current = original.sockets.plugs[lane] ? catalog.find(*original.sockets.plugs[lane]) : nullptr;
         if (!current || !nonzero(contribution(*current, catalog))) continue;
-        // Stay in the native socket pool; stat editing never replaces a gameplay perk with an arbitrary stat plug.
-        std::vector<std::uint16_t> choices;
-        for (auto id : definition->compatible[lane]) {
-            const auto* choice = catalog.index(id);
-            if (choice && choice->definition.plugCategoryHash == current->definition.plugCategoryHash
-                && nonzero(contribution(*choice, catalog))) choices.push_back(id);
-        }
-        if (choices.empty()) continue;
+        // Stat editing never replaces a gameplay perk with an arbitrary stat plug: a lane only
+        // trades within the set `stat_choices` says it rolls from.
+        const std::vector<std::uint16_t> choices = stat_choices(*definition, lane, *current, catalog);
+        if (choices.size() < 2) continue;
         mutableLane = true;
         std::vector<Plan> next;
         for (const auto& plan : plans) for (auto id : choices) {
@@ -215,7 +305,7 @@ bool unequip(Draft& draft, const Catalog&, std::size_t character, std::size_t sl
     target.inventory.values[target.inventory.count++] = item; target.equipment.slots[slot].reset(); draft.dirty = true;
     error = "Moved to inventory in draft."; return true;
 }
-bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const std::array<bool, 16>& slots, int power, std::mt19937& random, std::string& error) {
+bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const std::array<bool, inv::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error) {
     if (power < 0 || power > kMaximumItemLevel) { error = "Item level must be between 0 and 106."; return false; }
     if (characterIndex >= draft.after.characterCount) return false;
     auto staged = std::make_unique<Draft>(draft);
@@ -244,7 +334,11 @@ bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex,
             }
             if (owned.empty() || !equip(*staged, catalog, characterIndex, owned[random() % owned.size()], error)) { error = "No valid random choice for one of the selected slots."; return false; }
         } else if (!give(*staged, catalog, characterIndex, options[random() % options.size()]->definition.definitionHash, 1, power, true, error)) return false;
-        auto& equipped = *staged->after.characters[characterIndex].equipment.slots[slot];
+        // Both branches above place the item in the slot the options were filtered by, but a null
+        // here would crash the randomizer rather than refuse, so it is checked as a refusal.
+        auto& target = staged->after.characters[characterIndex].equipment.slots[slot];
+        if (!target) { error = "No valid random choice for one of the selected slots."; return false; }
+        auto& equipped = *target;
         equipped.level = power;
         const auto* definition = catalog.find(equipped.definitionHash);
         for (std::size_t lane = 0; definition && lane < definition->compatible.size(); ++lane) {
@@ -255,6 +349,46 @@ bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex,
     }
     if (!any) { error = "Choose at least one slot to randomize."; return false; }
     draft.after = staged->after; draft.dirty = true; error = "Random loadout staged. Your previous equipment is in inventory."; return true;
+}
+// An earlier editor labelled its power field "power" but wrote the value straight into the item
+// level, which the game shows at ten Power per level. A level this far above the installed reward
+// tiers was typed as Power, and dividing it back only ever restores a plausible level.
+constexpr std::int32_t kImplausibleLevel = 200;
+
+/** @return True when one item's level was written as Power and has been divided back. */
+bool restore_level(Item& item) {
+    if (item.level <= kImplausibleLevel || item.level % equipment::light::kPowerPerLevel != 0) return false;
+    const auto restored = item.level / equipment::light::kPowerPerLevel;
+    if (restored > kImplausibleLevel) return false;
+    item.level = restored;
+    return true;
+}
+
+bool normalize(Draft& draft, std::string& message) {
+    bool serials = false;
+    std::size_t levels = 0;
+    for (std::size_t c = 0; c < draft.after.characterCount; ++c) {
+        auto& character = draft.after.characters[c];
+        for (auto& slot : character.equipment.slots) if (slot) levels += restore_level(*slot) ? 1 : 0;
+        for (std::size_t i = 0; i < character.inventory.count; ++i) {
+            levels += restore_level(character.inventory.values[i]) ? 1 : 0;
+        }
+        const auto before = character.nextInventorySerial;
+        if (!prepare_serial_counter(character)) continue;
+        serials |= character.nextInventorySerial != before;
+    }
+    if (!serials && levels == 0) return false;
+    draft.dirty = true;
+    if (levels != 0) {
+        char line[128]{};
+        (void)std::snprintf(line, sizeof line,
+            "Repaired the Power on %zu item%s stored as a raw level. Apply to finish the fix.",
+            levels, levels == 1 ? "" : "s");
+        message = line;
+    } else {
+        message = "Repaired an item revision this account could not publish. Apply to finish the fix.";
+    }
+    return true;
 }
 bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& output, std::string& error) {
     output = draft.after;
@@ -289,6 +423,7 @@ bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& ou
         };
         for (auto& item : character.equipment.slots) if (item && !check(*item)) return false;
         for (std::size_t i = 0; i < character.inventory.count; ++i) if (!check(character.inventory.values[i])) return false;
+        if (!prepare_serial_counter(character)) { error = "Item revision limit reached."; return false; }
     }
     std::array<std::size_t, 256> occupied{};
     for (std::size_t i = 0; i < output.profileItemCount; ++i) {
@@ -310,6 +445,9 @@ bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& ou
             break;
         }
     }
-    return account::valid(output);
+    // The serial repairs above can only have made the image less valid, and a refusal that says
+    // nothing leaves the action bar showing the outcome of the apply before this one.
+    if (!account::valid(output)) { error = "The draft contains an invalid character or inventory value."; return false; }
+    return true;
 }
 }

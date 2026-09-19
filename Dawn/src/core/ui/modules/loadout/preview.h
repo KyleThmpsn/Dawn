@@ -10,5 +10,9 @@ void attach(ID3D11Device* device) noexcept;
 void release() noexcept;
 void shutdown() noexcept;
 // Requests only visible artwork, then draws background, primary, watermark and foreground.
-bool draw(std::uint32_t tag, ImVec2 position, float size) noexcept;
+// `tint` multiplies every layer, which is how a monochrome UI glyph is given its meaning colour.
+bool draw(std::uint32_t tag,
+          ImVec2 position,
+          float size,
+          ImU32 tint = IM_COL32_WHITE) noexcept;
 }

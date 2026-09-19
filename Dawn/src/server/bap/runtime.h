@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include "../../client/network/consumer.h"
 #include "../../state/activity/definition.h"
 #include "region_lineage.h"
@@ -19,6 +21,15 @@ struct HudRegionSnapshot final {
 /** Applies one connection-scoped BAP lifecycle event. */
 [[nodiscard]] bool consume(const client::network::BapRequest& request,
                            client::network::BapResponse& response) noexcept;
+
+/**
+ * Arms every authenticated account peer for a full refresh after an out-of-band account change.
+ * A BAP request commits its own mutation and arms the other peers itself. The loadout editor has
+ * no request and no origin session, so it publishes through here instead and every peer, including
+ * the local Client, is armed. The refresh goes out on the next service poll.
+ * @return Number of peers armed. Zero means no authenticated peer holds the account family yet.
+ */
+std::size_t publish_external_account_mutation() noexcept;
 
 /**
  * Serializes borrower invalidation and exact retirement of one group-owned record.

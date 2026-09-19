@@ -68,21 +68,9 @@ constexpr std::int8_t kLastWeaponEquipmentSlot = 9;
            plug.bucketId != kModBucketId;
 }
 
-/// The ten global masterwork-stat plug categories (one per weapon stat, identical on every
-/// weapon). A masterwork socket's candidates live in its reusable set under these categories,
-/// never in the randomized set, so the roll pool alone cannot see them.
-constexpr std::array<std::uint32_t, 10> kMasterworkStatCategories{
-    199786516U,  // handling
-    482070447U,  // draw time
-    717646604U,  // reload speed
-    1238043140U, // accuracy
-    1392237582U, // range
-    1762223024U, // stability
-    1847616696U, // blast radius
-    2321551094U, // projectile speed
-    2458812152U, // impact
-    2827428737U, // charge time
-};
+/// A masterwork socket's candidates live in its reusable set under the global masterwork-stat
+/// categories, never in the randomized set, so the roll pool alone cannot see them.
+using build_data::items::kMasterworkStatCategories;
 
 /** One masterwork socket's Tier-1 stat plugs, at most one per stat family. */
 struct MasterworkScan {

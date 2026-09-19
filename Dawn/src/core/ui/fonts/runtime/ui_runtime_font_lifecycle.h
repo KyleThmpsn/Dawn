@@ -3,6 +3,9 @@
 #include <Windows.h>
 
 #include <cstddef>
+#include <imgui.h>
+
+#include "../installed/ui_installed_font_reader.h"
 
 namespace dawn::core::ui::fonts::runtime {
 
@@ -55,5 +58,16 @@ struct Snapshot {
 
 /** @return One snapshot of the font source, size, and scale, read under the lock. */
 [[nodiscard]] Snapshot snapshot() noexcept;
+
+/** The heavier cuts a caller can set a line in, which are the ones the reader loads. */
+using Weight = installed::Weight;
+
+/**
+ * @return One heavier cut of the UI face, or null when the install ships none.
+ * A caller that wants a heavier line pushes this at the size it wants; without it there is no cut
+ * to push and the line has to be struck heavier by hand.
+ * @param value Cut being asked for.
+ */
+[[nodiscard]] ImFont* weight(Weight value) noexcept;
 
 } // namespace dawn::core::ui::fonts::runtime

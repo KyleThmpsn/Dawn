@@ -113,7 +113,11 @@ void drain() {
         if (it == g_textures.end() || !g_device) continue;
         auto& texture = it->second; texture.pending = false;
         if (!result.primary) { texture.failed = true; continue; }
+        // A device reset can drop an in-flight read and let the same tag be requested again, so a
+        // second result for one tag must replace the first rather than append past the array.
+        free(texture); texture.count = 0;
         for (const auto& data : result.layers) {
+            if (texture.count >= texture.views.size()) break;
             D3D11_TEXTURE2D_DESC desc{};
             desc.Width = data.width; desc.Height = data.height; desc.MipLevels = 1; desc.ArraySize = 1;
             desc.Format = static_cast<DXGI_FORMAT>(data.format); desc.SampleDesc.Count = 1;
@@ -148,7 +152,7 @@ void shutdown() noexcept {
     if (g_worker.joinable()) g_worker.join();
     { std::lock_guard lock(g_lock); g_requests.clear(); g_results.clear(); }
 }
-bool draw(std::uint32_t tag, ImVec2 position, float size) noexcept {
+bool draw(std::uint32_t tag, ImVec2 position, float size, ImU32 tint) noexcept {
     if (!g_device || !valid_tag(tag)) return false;
     try {
         drain();
@@ -170,7 +174,7 @@ bool draw(std::uint32_t tag, ImVec2 position, float size) noexcept {
             else { g_textures.erase(it); return false; }
         }
         for (std::size_t i = 0; i < texture.count; ++i)
-            ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(texture.views[i]), position, {position.x + size, position.y + size});
+            ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(texture.views[i]), position, {position.x + size, position.y + size}, {0.0F, 0.0F}, {1.0F, 1.0F}, tint);
         return texture.count != 0;
     } catch (...) { return false; }
 }
