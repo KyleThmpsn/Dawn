@@ -114,34 +114,26 @@ void draw_identity_group(state::CharacterState& value, float groupWidth, float l
 
 
 /**
- * @return The armor stats as the game displays them.
- * Stored values are summed first and then put through the equipped armor's stat group curve,
- * which is the order the game shows: the curve maps a total investment value to a shown value.
+ * @return The armor stats as the character screen shows them.
+ * Each piece's stored values go through its own stat group curve, as its tooltip shows them, and
+ * the shown values are summed. A curve describes one item, so its last point is a single piece's
+ * ceiling; putting the sum through it would clamp every total above that point to it.
  */
 [[nodiscard]] edit::Stats armor_totals(const state::CharacterState& value) noexcept {
     const edit::Catalog& catalog = model().catalog;
     edit::Stats totals{};
-    std::uint16_t group = edit::kNoStatGroup;
     for (std::size_t slot = kFirstArmorSlot; slot <= kLastArmorSlot; ++slot) {
         if (!value.equipment.slots[slot]) {
             continue;
         }
         const edit::Stats stats = edit::item_stats(*value.equipment.slots[slot], catalog);
+        std::uint16_t group = edit::kNoStatGroup;
+        if (const auto* definition = catalog.find(value.equipment.slots[slot]->definitionHash)) {
+            group = definition->statGroupIndex;
+        }
         for (std::size_t i = 0; i < totals.size(); ++i) {
-            totals[i] += stats[i];
+            totals[i] += edit::display_stat(catalog, group, catalog.statRows[i], stats[i]);
         }
-        // Equipped armor shares one stat group; the first piece that names one speaks for the set.
-        if (group == edit::kNoStatGroup) {
-            if (const auto* definition = catalog.find(value.equipment.slots[slot]->definitionHash)) {
-                group = definition->statGroupIndex;
-            }
-        }
-    }
-    if (group == edit::kNoStatGroup) {
-        return totals;
-    }
-    for (std::size_t i = 0; i < totals.size(); ++i) {
-        totals[i] = edit::display_stat(catalog, group, catalog.statRows[i], totals[i]);
     }
     return totals;
 }
