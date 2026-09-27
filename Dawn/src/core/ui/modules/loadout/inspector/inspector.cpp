@@ -35,7 +35,7 @@ constexpr std::size_t kCharacterLabelCapacity = 32;
 constexpr const char* kEquippedLabel = "Equipped";
 constexpr const char* kPostmasterLabel = "Postmaster";
 constexpr const char* kInInventoryLabel = "In inventory";
-constexpr const char* kNotOwnedLabel = "Not owned";
+constexpr const char* kNotInInventoryLabel = "Not in inventory";
 
 /** Where the selected item sits on the character, if it is equipped at all. */
 struct Placement {
@@ -56,10 +56,10 @@ struct Placement {
 
 /**
  * @return Where the character already keeps a copy of one catalog item, in the header's words, or
- * "Not owned" when it keeps none.
+ * "Not in inventory" when it keeps none.
  * A pane bound to a catalog entry still offers to add another copy, so it stays bound to the entry;
  * this only lets its header say truthfully whether there is one already. Without it the header read
- * "Not owned" beside an item just added to the inventory, and beside any the character already had.
+ * that it was not there beside an item just added to the inventory, and beside any already there.
  * @param hash Definition hash of the catalog item.
  */
 [[nodiscard]] const char* holding_of(std::uint32_t hash) noexcept {
@@ -91,7 +91,7 @@ struct Placement {
             return kInInventoryLabel;
         }
     }
-    return kNotOwnedLabel;
+    return kNotInInventoryLabel;
 }
 
 /**

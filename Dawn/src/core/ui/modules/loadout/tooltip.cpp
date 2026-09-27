@@ -148,6 +148,16 @@ constexpr ImVec4 kMasterworkGlowExotic{1.0F, 1.0F, 1.0F, 0.85F};
 /** What the wash is left with at the icon end of the band, as a share of its own strength. */
 constexpr float kMasterworkGlowFade = 0.12F;
 constexpr ImVec4 kBadgeFill{1.0F, 1.0F, 1.0F, 0.12F};
+/**
+ * Installed buckets of the plugs that carry their own frame: ornaments, shaders and mods. The roll
+ * reads a lane's default plug by the same buckets to keep an owned choice out of a rolled lane.
+ */
+constexpr std::uint8_t kOrnamentBucketId = 13;
+constexpr std::uint8_t kShaderBucketId = 14;
+constexpr std::uint8_t kModBucketId = 37;
+/** Words in a plug's type that name a framed plug no bucket or category answers for. */
+constexpr const char* kFramedTypeWords[]{
+    "intrinsic", "masterwork", "catalyst", "mod", "ornament", "shader", "tracker", "restore"};
 constexpr ImVec4 kBarTrack{1.0F, 1.0F, 1.0F, 0.14F};
 constexpr ImVec4 kBarFill{0.93F, 0.93F, 0.93F, 1.0F};
 constexpr ImVec4 kRuleColor{1.0F, 1.0F, 1.0F, 0.10F};
@@ -264,14 +274,48 @@ void rule() noexcept {
 }
 
 /**
+ * @return True when a plug is armor's masterwork, which is known by the energy capacity it adds.
+ * That capacity is the plug's own first stat, so the stat it names is the one asked about.
+ */
+[[nodiscard]] bool energy_plug(const edit::CatalogItem& plug) noexcept {
+    if (plug.definition.actionStatValue == 0) {
+        return false;
+    }
+    const edit::Catalog& catalog = internal::model().catalog;
+    const auto name = catalog.statNames.find(plug.definition.actionStatRow);
+    return name != catalog.statNames.end()
+           && edit::searchable(name->second).find("energy capacity") != std::string::npos;
+}
+
+/**
  * @return True when a plug is drawn inside a round badge.
- * The game badges a weapon's traits. A mod, a shader and an intrinsic each ship framed artwork of
- * their own, so a badge behind them reads as a second frame around the first.
+ * The game badges a weapon's traits and nothing else. An intrinsic, a masterwork, a mod, an
+ * ornament, a shader and a tracker each ship framed artwork of their own, so a badge behind them
+ * reads as a second frame around the first. The bucket and the category answer first, since they
+ * do not hang on the localized type; the type words cover what neither of them names.
  */
 [[nodiscard]] bool badged_plug(const edit::CatalogItem& plug) noexcept {
+    const state::build_data::items::Definition& definition = plug.definition;
+    if (definition.bucketId == kOrnamentBucketId || definition.bucketId == kShaderBucketId
+        || definition.bucketId == kModBucketId) {
+        return false;
+    }
+    // A weapon's masterwork draws from the global masterwork-stat categories at every tier.
+    for (const std::uint32_t category : state::build_data::items::kMasterworkStatCategories) {
+        if (definition.plugCategoryHash == category) {
+            return false;
+        }
+    }
+    if (energy_plug(plug)) {
+        return false;
+    }
     const std::string type = edit::searchable(plug.type);
-    return type.find("intrinsic") == std::string::npos && type.find("mod") == std::string::npos
-           && type.find("shader") == std::string::npos && type.find("ornament") == std::string::npos;
+    for (const char* word : kFramedTypeWords) {
+        if (type.find(word) != std::string::npos) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /** @return The mark one element draws with. */
@@ -461,12 +505,11 @@ struct Title {
                              const std::vector<StatRow>& rows) noexcept {
     Title title;
     if (titled_by_power(definition)) {
-        // A catalog entry has no power of its own to be titled by.
-        if (owned == nullptr || owned->instanceSoid == 0) {
-            return title;
-        }
         title.shown = true;
-        title.value = internal::power_of(owned->level);
+        // A catalog entry has no power of its own, so it is titled by the power it would be
+        // granted at, which the grant controls set; the rest of the row is the definition's own.
+        const bool catalogEntry = owned == nullptr || owned->instanceSoid == 0;
+        title.value = catalogEntry ? internal::model().grant.power : internal::power_of(owned->level);
         if (definition.ammo != edit::Ammo::none) {
             title.label = definition.ammo == edit::Ammo::primary   ? "PRIMARY"
                           : definition.ammo == edit::Ammo::special ? "SPECIAL"

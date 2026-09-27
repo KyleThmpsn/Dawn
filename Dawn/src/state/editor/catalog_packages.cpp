@@ -4,6 +4,7 @@
 #include "catalog.h"
 #include "localized_strings.h"
 #include "../../client/content/items/packages/internal.h"
+#include "../../middleware/content/packages/tables/ability_pool_reader.h"
 #include "../runtime/state_account_transaction_helpers.h"
 #include "../../../vendor/sundial/class_items.h"
 #include <algorithm>
@@ -14,6 +15,7 @@ namespace {
 namespace packages = client::content::items::packages;
 namespace reader = middleware::content::packages::reader;
 namespace tables = middleware::content::packages::tables;
+namespace abilities = middleware::content::packages::tables::abilities;
 
 
 /** Running state of the icon sweep, which runs through a plain function pointer. */
@@ -38,6 +40,52 @@ constexpr std::uint32_t kHeavyAmmoIconRow = 8381;
 
 /** Icons an installed directory may declare. Far above the ~16k the investment package carries. */
 constexpr std::size_t kIconSweepLimit = 400000;
+
+/** Investment globals slots and row classes of the item strings, the string banks and the icons. */
+constexpr std::size_t kItemStringMapSlot = 33;
+constexpr std::size_t kLocalizedIndexSlot = 72;
+constexpr std::size_t kIconTableSlot = 75;
+constexpr std::uint32_t kItemStringRowClass = 0x80805CDFU;
+constexpr std::uint32_t kIconRowClass = 0x80802957U;
+/** An item's strings: its icon row, then its name and its type as localized references. */
+constexpr std::size_t kItemIconOffset = 0x80;
+constexpr std::size_t kItemNameOffset = 0x84;
+constexpr std::size_t kItemTypeOffset = 0x90;
+/** One icon table row, and the container tag inside it. */
+constexpr std::size_t kIconRowSize = 0x18;
+constexpr std::size_t kIconRowTagOffset = 0x10;
+/**
+ * A subclass's socket-entry list: 64-byte entries from 0x10, each with its display hash, its plug
+ * source, its group and its kind, and at 56 the pool that grants it. Offsets are Parhelion's.
+ */
+constexpr std::size_t kSubclassEntryArray = 0x10;
+constexpr std::size_t kSubclassEntrySize = 64;
+constexpr std::size_t kSubclassEntryLimit = 36;
+constexpr std::size_t kSubclassEntryPoolOffset = 56;
+/** The entry that leads the middle attunement, which is its own super when it brings one. */
+constexpr std::size_t kMiddleAttunementLead = 20;
+/**
+ * Attunement names. A subclass display record lists each attunement's plug source beside the lore
+ * row the client names it by, and the lore display table holds that row's name. An authored path's
+ * own name is a lore row Parhelion adds. Slots, classes and offsets are Parhelion's.
+ */
+constexpr std::size_t kDisplayPathArray = 0x30;
+constexpr std::uint32_t kDisplayPathRowClass = 0x80805C45U;
+constexpr std::size_t kDisplayPathRowSize = 8;
+constexpr std::size_t kLoreDisplaySlot = 34;
+constexpr std::uint32_t kLoreDisplayClass = 0x80805ABAU;
+constexpr std::size_t kLoreDisplayRowSize = 40;
+constexpr std::size_t kLoreNameOffset = 12;
+/** The stock subclasses' list rows: three to a class, one spare row between two classes. */
+constexpr std::array<std::size_t, 9> kStockSubclassRows{1, 2, 3, 5, 6, 7, 9, 10, 11};
+
+/** @return The class a stock subclass list row belongs to, or -1 for a row past the stock ones. */
+int stock_subclass_class(std::size_t row) noexcept {
+    if (row >= 1 && row <= 3) return 1;
+    if (row >= 5 && row <= 7) return 0;
+    if (row >= 9 && row <= 11) return 2;
+    return -1;
+}
 
 /** Orders icons by package, then row, then tag, which is the order the browser walks them in. */
 void sort_icons(std::vector<IconRow>& icons) {
@@ -253,6 +301,97 @@ struct ReadScope {
     std::unique_ptr<reader::Scratch> scratch{std::make_unique<reader::Scratch>()};
     ~ReadScope() { reader::close_files(*scratch); SecureZeroMemory(&keys, sizeof keys); }
 };
+/**
+ * Resolves localized string references through the investment's bank index, opening each bank
+ * table once and keeping it. The catalog load and the icon sweep both name things through it.
+ */
+struct Bank {
+    const reader::Source& source;
+    reader::Scratch& scratch;
+    const std::vector<std::byte>& index;
+    const tables::Array& rows;
+    std::unordered_map<std::uint32_t, std::unordered_map<std::uint32_t, std::string>> banks;
+
+    std::string operator()(std::span<const std::byte> data, std::size_t at) {
+        std::uint32_t table{}, hash{};
+        if (!strings::read(data, at, table) || !strings::read(data, at + 4, hash) || table >= rows.count) return {};
+        auto it = banks.find(table);
+        if (it == banks.end()) {
+            std::unordered_map<std::uint32_t, std::string> values;
+            std::uint32_t headerTag{}, dataTag{};
+            std::vector<std::byte> header, bytes;
+            if (strings::read(std::span<const std::byte>(index), rows.dataOffset + table * 8 + 4, headerTag)
+                && reader::read_tag(source, scratch, headerTag, header)
+                && strings::read(std::span<const std::byte>(header), 24, dataTag)
+                && reader::read_tag(source, scratch, dataTag, bytes)) (void)strings::decode(header, bytes, values);
+            it = banks.emplace(table, std::move(values)).first;
+        }
+        const auto found = it->second.find(hash);
+        return found == it->second.end() ? std::string{} : found->second;
+    }
+};
+/**
+ * @return True when one socket entry's active pool variant declares a bucket kind of its own. A
+ * middle attunement brings its own super only then; otherwise it adds to the shared super, which
+ * stays the one selected. The data says which for every subclass, stock or authored. The pool is
+ * walked by the ability reader the subclass bucket build already relies on.
+ * @param entry Index of the entry in its list.
+ * @param pool Scratch buffer the entry's pool is read into.
+ */
+bool declares_kind(const reader::Source& source, reader::Scratch& scratch, std::span<const std::byte> list,
+                   std::size_t entry, std::vector<std::byte>& pool) {
+    std::array<abilities::Entry, abilities::kEntryCapacity> entries{};
+    std::array<abilities::PoolRecord, 1> first{};
+    return entry < abilities::read_entries(list, entries)
+        && reader::read_tag(source, scratch, entries[entry].poolTag, pool)
+        && abilities::read_pool_records(pool, entries[entry], 0, first) != 0
+        && first[0].kind != abilities::kEmptyByte;
+}
+/** @return The icon container one icon table row names, or zero. */
+std::uint32_t icon_tag_of(std::span<const std::byte> table, const tables::Array& rows, std::size_t row) {
+    std::uint32_t tag{};
+    if (row < rows.count) (void)strings::read(table, rows.dataOffset + row * kIconRowSize + kIconRowTagOffset, tag);
+    return tag;
+}
+/**
+ * Names every item definition outside the catalog that carries an icon, so the icon browser can say
+ * an icon belongs to an item the editor does not list. An item's strings are what name its icon.
+ */
+void collect_icon_owners(const Catalog& catalog, const reader::Source& source, reader::Scratch& scratch,
+                         std::vector<IconOwner>& owners) {
+    std::array<std::uint32_t, packages::kContainerCandidates> globalsTags{};
+    std::size_t globalsCount{};
+    if (!packages::investment_globals_tags(globalsTags, globalsCount)) return;
+    std::vector<std::byte> globals, stringMap, localizedIndex, iconTable, itemStrings;
+    tables::Array stringRows{}, localizedRows{}, iconRows{};
+    bool located = false;
+    for (std::size_t i = 0; i < globalsCount && !located; ++i) {
+        std::uint32_t stringTag{}, localizedTag{}, iconTag{};
+        located = reader::read_tag(source, scratch, globalsTags[i], globals)
+            && tables::child_tag(globals, kItemStringMapSlot, stringTag)
+            && tables::child_tag(globals, kLocalizedIndexSlot, localizedTag)
+            && tables::child_tag(globals, kIconTableSlot, iconTag)
+            && reader::read_tag(source, scratch, stringTag, stringMap)
+            && reader::read_tag(source, scratch, localizedTag, localizedIndex)
+            && reader::read_tag(source, scratch, iconTag, iconTable)
+            && tables::find_array_at(stringMap, 8, stringRows) && stringRows.elementClass == kItemStringRowClass
+            && tables::find_array_at(localizedIndex, 8, localizedRows)
+            && tables::find_array_at(iconTable, 8, iconRows) && iconRows.elementClass == kIconRowClass;
+    }
+    if (!located) return;
+    Bank resolve{source, scratch, localizedIndex, localizedRows, {}};
+    for (std::size_t i = 0; i < stringRows.count; ++i) {
+        tables::IndexRow row{};
+        std::uint16_t icon{};
+        if (!tables::index_row(stringMap, stringRows, i, row) || catalog.hashes.contains(row.definitionHash)
+            || !reader::read_tag(source, scratch, row.targetTag, itemStrings)
+            || !strings::read(std::span<const std::byte>(itemStrings), kItemIconOffset, icon)) continue;
+        const std::uint32_t tag = icon_tag_of(iconTable, iconRows, icon);
+        if (tag == 0) continue;
+        owners.push_back({tag, row.definitionHash, resolve(itemStrings, kItemNameOffset),
+                          resolve(itemStrings, kItemTypeOffset)});
+    }
+}
 bool pool_member(void* context, std::uint16_t id) noexcept {
     static_cast<std::vector<std::uint16_t>*>(context)->push_back(id);
     return true;
@@ -278,8 +417,9 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
         for (std::size_t i = 0; i < globalsCount && !located; ++i) {
             std::uint32_t stringTag{}, localizedTag{}, iconTag{}, statStringTag{}, statGroupTag{};
             located = reader::read_tag(source, *scope.scratch, globalsTags[i], globals)
-                && tables::child_tag(globals, 33, stringTag) && tables::child_tag(globals, 72, localizedTag)
-                && tables::child_tag(globals, 75, iconTag)
+                && tables::child_tag(globals, kItemStringMapSlot, stringTag)
+                && tables::child_tag(globals, kLocalizedIndexSlot, localizedTag)
+                && tables::child_tag(globals, kIconTableSlot, iconTag)
                 && tables::child_tag(globals, kStatStringMapSlot, statStringTag)
                 && reader::read_tag(source, *scope.scratch, statStringTag, statStrings)
                 && tables::find_array_at(statStrings, 8, statStringRows)
@@ -290,9 +430,9 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
                 && reader::read_tag(source, *scope.scratch, stringTag, stringMap)
                 && reader::read_tag(source, *scope.scratch, localizedTag, localizedIndex)
                 && reader::read_tag(source, *scope.scratch, iconTag, iconTable)
-                && tables::find_array_at(stringMap, 8, stringRows) && stringRows.elementClass == 0x80805CDFU
+                && tables::find_array_at(stringMap, 8, stringRows) && stringRows.elementClass == kItemStringRowClass
                 && tables::find_array_at(localizedIndex, 8, localizedRows)
-                && tables::find_array_at(iconTable, 8, iconRows) && iconRows.elementClass == 0x80802957U;
+                && tables::find_array_at(iconTable, 8, iconRows) && iconRows.elementClass == kIconRowClass;
         }
     }
     if (!located) { error = "Could not read the installed item names and preview index."; return false; }
@@ -301,25 +441,8 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
         tables::IndexRow row{};
         if (tables::index_row(stringMap, stringRows, i, row)) tags[row.definitionHash] = row.targetTag;
     }
-    std::unordered_map<std::uint32_t, std::unordered_map<std::uint32_t, std::string>> cache;
     std::unordered_map<std::uint32_t, bool> previewReferences;
-    const auto resolve = [&](std::span<const std::byte> data, std::size_t at) -> std::string {
-        std::uint32_t table{}, hash{};
-        if (!strings::read(data, at, table) || !strings::read(data, at + 4, hash) || table >= localizedRows.count) return {};
-        auto it = cache.find(table);
-        if (it == cache.end()) {
-            std::unordered_map<std::uint32_t, std::string> values;
-            std::uint32_t headerTag{}, dataTag{};
-            std::vector<std::byte> header, bytes;
-            if (strings::read(std::span<const std::byte>(localizedIndex), localizedRows.dataOffset + table * 8 + 4, headerTag)
-                && reader::read_tag(source, *scope.scratch, headerTag, header)
-                && strings::read(std::span<const std::byte>(header), 24, dataTag)
-                && reader::read_tag(source, *scope.scratch, dataTag, bytes)) (void)strings::decode(header, bytes, values);
-            it = cache.emplace(table, std::move(values)).first;
-        }
-        const auto found = it->second.find(hash);
-        return found == it->second.end() ? std::string{} : found->second;
-    };
+    Bank resolve{source, *scope.scratch, localizedIndex, localizedRows, {}};
     Catalog result;
     build_data::constants::InvestmentConstants constants{};
     if (!build_data::find_investment_constants(constants)) { error = "Armor stat definitions are not ready."; return false; }
@@ -344,6 +467,18 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             || icon == kNoStatIcon || icon >= iconRows.count) continue;
         (void)strings::read(std::span<const std::byte>(iconTable),
                             iconRows.dataOffset + icon * 0x18 + 0x10, result.statIconTags[i]);
+    }
+    // Every stat that names an icon, not only the six character stats, so the icon browser can say
+    // which stat an icon marks.
+    for (std::uint64_t row = 0; row < statStringRows.count; ++row) {
+        std::uint16_t icon{};
+        if (!strings::read(std::span<const std::byte>(statStrings),
+                           statStringRows.dataOffset + static_cast<std::size_t>(row) * kStatStringRowSize
+                               + kStatIconIndexOffset,
+                           icon)
+            || icon == kNoStatIcon) continue;
+        const std::uint32_t tag = icon_tag_of(iconTable, iconRows, icon);
+        if (tag != 0) result.statIcons.emplace_back(static_cast<std::uint16_t>(row), tag);
     }
     // Each stat definition leads with the hash an item names its primary stat by, and sits at the
     // same index as the stat string row that names it.
@@ -450,6 +585,9 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             && item.detail.instancedDefinitionState == build_data::items::details::InstancedDefinitionState::instanced) item.plug = false;
         if (auto it = tags.find(item.definition.definitionHash); it != tags.end()
             && reader::read_tag(source, *scope.scratch, it->second, itemStrings)) {
+            // Gear the stock lists do not hold, such as anything Parhelion authors, is named by the
+            // class key its strings carry, as Sundial reads it.
+            if (item.characterClass == 3) item.characterClass = classes::from_item_strings(itemStrings);
             item.name = resolve(itemStrings, 0x84);
             item.type = resolve(itemStrings, 0x90);
             item.description = resolve(itemStrings, 0x98);
@@ -565,19 +703,61 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
         }
     }
     // Sundial's parallel subclass displays provide localized ability and path names.
-    std::vector<std::byte> root, listIndex, displays, list, displayRecord, abilityDisplay;
+    std::vector<std::byte> root, listIndex, displays, list, displayRecord, abilityDisplay, poolRecord;
     std::uint32_t tag{}; tables::Array listRows{}, displayRows{};
     if (tables::child_tag(globals, 0, tag) && reader::read_tag(source, *scope.scratch, tag, root)
         && tables::slot_tag(root, 97, tag) && reader::read_tag(source, *scope.scratch, tag, listIndex)
         && tables::find_array_at(listIndex, 8, listRows)
         && tables::child_tag(globals, 61, tag) && reader::read_tag(source, *scope.scratch, tag, displays)
         && tables::find_array_at(displays, 8, displayRows)) {
+        const auto read_list = [&](std::size_t id, tables::Array& entries) {
+            tables::IndexRow row{};
+            return tables::index_row(listIndex, listRows, id, row)
+                && reader::read_tag(source, *scope.scratch, row.targetTag, list)
+                && tables::find_array_at(list, kSubclassEntryArray, entries) && entries.count <= kSubclassEntryLimit
+                && entries.count <= (list.size() - entries.dataOffset) / kSubclassEntrySize;
+        };
+        const auto class_base_pool = [&](const tables::Array& entries, std::uint32_t& pool) {
+            return entries.count != 0
+                && strings::read(std::span<const std::byte>(list), entries.dataOffset + kSubclassEntryPoolOffset, pool);
+        };
+        // Parhelion gives a subclass it authors a list row of its own, past the stock rows. The list
+        // keeps its base's first entry, the class-base melee, whose pool differs by class, so the
+        // stock rows say which pool is which class.
+        std::unordered_map<std::uint32_t, std::uint8_t> classPools;
+        for (const std::size_t id : kStockSubclassRows) {
+            tables::Array entries{};
+            std::uint32_t pool{};
+            if (read_list(id, entries) && class_base_pool(entries, pool))
+                classPools.emplace(pool, static_cast<std::uint8_t>(stock_subclass_class(id)));
+        }
+        std::vector<std::byte> loreStrings;
+        tables::Array loreRows{};
+        std::uint32_t loreTag{};
+        const bool loreReady = tables::child_tag(globals, kLoreDisplaySlot, loreTag)
+            && reader::read_tag(source, *scope.scratch, loreTag, loreStrings)
+            && tables::find_array_at(loreStrings, 8, loreRows) && loreRows.elementClass == kLoreDisplayClass;
+        // The name of the attunement one plug source leads, from the lore row the subclass's display
+        // record shows it by. Empty when the record names no row for it.
+        const auto lore_name = [&](std::uint32_t plugSource) -> std::string {
+            tables::Array pathRows{};
+            if (!loreReady || !tables::find_array_at(displayRecord, kDisplayPathArray, pathRows)
+                || pathRows.elementClass != kDisplayPathRowClass) return {};
+            for (std::uint64_t r = 0; r < pathRows.count; ++r) {
+                const std::size_t at = pathRows.dataOffset + static_cast<std::size_t>(r) * kDisplayPathRowSize;
+                std::uint32_t pathSource{}, loreRow{};
+                if (!strings::read(std::span<const std::byte>(displayRecord), at, pathSource) || pathSource != plugSource
+                    || !strings::read(std::span<const std::byte>(displayRecord), at + 4, loreRow)
+                    || loreRow >= loreRows.count) continue;
+                return resolve(loreStrings,
+                               loreRows.dataOffset + static_cast<std::size_t>(loreRow) * kLoreDisplayRowSize + kLoreNameOffset);
+            }
+            return {};
+        };
         for (auto& item : result.items) if (item.kind == GearKind::subclass) {
             const auto id = item.detail.socketEntryListIndex;
-            if (id >= 1 && id <= 3) item.characterClass = 1;
-            else if (id >= 5 && id <= 7) item.characterClass = 0;
-            else if (id >= 9 && id <= 11) item.characterClass = 2;
-            else continue;
+            const int stock = stock_subclass_class(id);
+            if (stock >= 0) item.characterClass = static_cast<std::uint8_t>(stock);
             if (item.name.empty()) {
                 switch (item.definition.definitionHash) {
                 case 0x4F91DC97U: item.name = "Arcstrider"; break;
@@ -592,10 +772,14 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
                 }
             }
             tables::IndexRow row{}; tables::Array entries{};
-            if (!tables::index_row(listIndex, listRows, id, row) || !reader::read_tag(source, *scope.scratch, row.targetTag, list)
-                || !tables::find_array_at(list, 16, entries) || entries.count > 36
-                || entries.count > (list.size() - entries.dataOffset) / 64
-                || !tables::index_row(displays, displayRows, id, row) || !reader::read_tag(source, *scope.scratch, row.targetTag, displayRecord)) continue;
+            if (!read_list(id, entries)) continue;
+            if (stock < 0) {
+                std::uint32_t pool{};
+                const auto known = class_base_pool(entries, pool) ? classPools.find(pool) : classPools.end();
+                if (known == classPools.end()) continue;
+                item.characterClass = known->second;
+            }
+            if (!tables::index_row(displays, displayRows, id, row) || !reader::read_tag(source, *scope.scratch, row.targetTag, displayRecord)) continue;
             std::unordered_map<std::uint32_t, std::string> names;
             std::vector<std::uint32_t> localTables;
             for (std::size_t at = 16; at + 4 <= displayRecord.size(); at += 4) {
@@ -610,7 +794,7 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             struct Entry { AbilityChoice choice; std::uint32_t source{}; std::uint8_t group{}; };
             std::vector<Entry> options;
             for (std::size_t i = 0; i < entries.count; ++i) {
-                const auto base = entries.dataOffset + i * 64; std::uint32_t displayHash{};
+                const auto base = entries.dataOffset + i * kSubclassEntrySize; std::uint32_t displayHash{};
                 Entry entry; entry.choice.entry = static_cast<std::uint8_t>(i);
                 (void)strings::read(std::span<const std::byte>(list), base, displayHash);
                 (void)strings::read(std::span<const std::byte>(list), base + 8, entry.source);
@@ -627,12 +811,16 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
                 && std::find(sources.begin(), sources.end(), entry.source) == sources.end()) sources.push_back(entry.source);
             constexpr std::uint32_t pathHashes[]{0xDF417340U,0x730873A5U,0x761AF51AU};
             constexpr const char* pathFallback[]{"Top path","Bottom path","Middle path"};
+            const bool middleSuper = declares_kind(source, *scope.scratch, list, kMiddleAttunementLead, poolRecord);
             for (std::size_t p = 0; p < sources.size() && p < 3; ++p) {
-                SubclassPath path; path.name = pathFallback[p];
-                for (auto local : localTables) if (auto bank = cache.find(local); bank != cache.end())
-                    if (auto name = bank->second.find(pathHashes[p]); name != bank->second.end()) { path.name = name->second; break; }
-                const bool retainedSuper = item.definition.definitionHash == 0x4F91DC97U || item.definition.definitionHash == 0xC99B33E9U;
-                path.super = p == 2 && !retainedSuper ? 20 : 10;
+                // The lore row names every path, stock or authored. The stock names the ability banks
+                // carry, and last the path's place, stand in only for a record that names no row.
+                SubclassPath path; path.name = lore_name(sources[p]);
+                if (path.name.empty())
+                    for (auto local : localTables) if (auto bank = resolve.banks.find(local); bank != resolve.banks.end())
+                        if (auto name = bank->second.find(pathHashes[p]); name != bank->second.end()) { path.name = name->second; break; }
+                if (path.name.empty()) path.name = pathFallback[p];
+                path.super = p == 2 && middleSuper ? 20 : 10;
                 bool first = true;
                 for (const auto& entry : options) if (entry.group == 3 && entry.source == sources[p]) {
                     path.perks.push_back(entry.choice.name);
@@ -650,9 +838,11 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
     output = std::move(result);
     return true;
 }
-bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages) {
+bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages,
+                 std::vector<IconOwner>& owners) {
     icons.clear();
     packages.clear();
+    owners.clear();
     if (catalog.iconClass == 0) return false;
     ReadScope scope;
     core::path::Buffer directory{};
@@ -661,6 +851,13 @@ bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vecto
     reader::ScanResult scan{};
     const bool complete =
         reader::scan_class_entries(directory.chars.data(), catalog.iconClass, &visit_icon, &sweep, scan);
+    // The owners only name what uses an icon, so a sweep that finds none of them still stands.
+    try {
+        const reader::Source source{directory.chars.data(), &scope.keys};
+        collect_icon_owners(catalog, source, *scope.scratch, owners);
+    } catch (...) {
+        owners.clear();
+    }
     reader::release_caches();
     if (!complete && !sweep.overflowed) {
         icons.clear();

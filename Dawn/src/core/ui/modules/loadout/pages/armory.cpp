@@ -33,6 +33,8 @@ static_assert(std::size(kSortLabels) == static_cast<std::size_t>(Sort::count),
               "Every sort order needs a label.");
 /** Rarity filter row that clears the filter; the tier rows take their names from art. */
 constexpr const char* kAnyRarityLabel = "All rarities";
+/** Slot filter row that clears the filter; the slot rows take the editor's slot names. */
+constexpr const char* kAnySlotLabel = "All slots";
 
 /** 380 authored pixels of height are needed before the tabs and the grid both fit. */
 constexpr float kCompactHeight = 380.0F;
@@ -42,6 +44,7 @@ constexpr float kCategoryTabRowInset = 36.0F;
 constexpr float kCompactCategoryWidth = 120.0F;
 /** Widths of the filter row selectors, and the least the search keeps when they crowd it. */
 constexpr float kSortWidth = 140.0F;
+constexpr float kSlotFilterWidth = 130.0F;
 constexpr float kTypeFilterWidth = 200.0F;
 constexpr float kRarityFilterWidth = 124.0F;
 constexpr float kSearchMinimumWidth = 160.0F;
@@ -75,12 +78,39 @@ constexpr std::size_t kTypePreviewCapacity = 64;
 }
 
 /**
+ * Gives the run of equipment slots one category's items go in, as a half-open range.
+ * @return False for a category whose items go in no slot, which then offers no slot filter.
+ */
+[[nodiscard]] bool category_slots(Category category, std::size_t& first, std::size_t& end) noexcept {
+    switch (category) {
+    case Category::weapons:
+        first = 0;
+        end = kLastWeaponSlot + 1;
+        return true;
+    case Category::armor:
+        first = kLastWeaponSlot + 1;
+        end = kLastArmorSlot + 1;
+        return true;
+    case Category::cosmetics:
+        first = kLastArmorSlot + 1;
+        end = kSlotCount;
+        return true;
+    case Category::perks:
+    case Category::materials:
+    case Category::count:
+        break;
+    }
+    return false;
+}
+
+/**
  * @return True when one item passes every armory filter except the item type.
  * The type is left out so `rebuild_results` can count how many items each type would show.
  */
 [[nodiscard]] bool passes_filters(const edit::CatalogItem& item, const std::string& query) noexcept {
     const Browse& browse = model().browse;
     return in_category(item, browse.category) && (browse.includeInternal || !item.internal)
+           && (browse.slot < 0 || item.slot == static_cast<std::size_t>(browse.slot))
            && (browse.rarity == 0 || item.definition.tier == browse.rarity)
            && (!browse.classOnly || edit::fits_class(item, character().characterClass))
            && edit::matches(item, query);
@@ -96,6 +126,10 @@ void draw_category_navigation(bool compact) noexcept {
                              kCategoryLabels,
                              static_cast<int>(std::size(kCategoryLabels)),
                              pixels(kCompactCategoryWidth))) {
+            // A slot belongs to one category, so it cannot follow the list into another.
+            if (browse.category != static_cast<Category>(category)) {
+                browse.slot = -1;
+            }
             browse.category = static_cast<Category>(category);
             browse.type.clear();
             model().results.key.clear();
@@ -112,6 +146,9 @@ void draw_category_navigation(bool compact) noexcept {
             ImGui::SameLine();
         }
         if (controls::tab(kCategoryLabels[i], category == static_cast<int>(i), width)) {
+            if (browse.category != static_cast<Category>(i)) {
+                browse.slot = -1;
+            }
             browse.category = static_cast<Category>(i);
             browse.type.clear();
             model().results.key.clear();
@@ -121,7 +158,35 @@ void draw_category_navigation(bool compact) noexcept {
 }
 
 /**
- * Draws the one filter row: the search leads, then the type, rarity and sort selectors, the
+ * Draws the slot selector, which narrows the results to what goes in one equipment slot, as the
+ * game's own bucket does. The subclass is left out: the armory carries none.
+ * @param first First slot the browsed category's items go in.
+ * @param end One past the last.
+ */
+void draw_slot_filter(std::size_t first, std::size_t end) noexcept {
+    Browse& browse = model().browse;
+    const char* preview = browse.slot < 0 ? kAnySlotLabel : edit::kSlots[browse.slot];
+    if (!controls::begin_picker("##slot", preview, pixels(kSlotFilterWidth))) {
+        return;
+    }
+    if (controls::picker_row(kAnySlotLabel, browse.slot < 0)) {
+        browse.slot = -1;
+        model().results.key.clear();
+    }
+    for (std::size_t slot = first; slot < end; ++slot) {
+        if (slot == kSubclassSlot) {
+            continue;
+        }
+        if (controls::picker_row(edit::kSlots[slot], browse.slot == static_cast<int>(slot))) {
+            browse.slot = static_cast<int>(slot);
+            model().results.key.clear();
+        }
+    }
+    controls::end_picker();
+}
+
+/**
+ * Draws the one filter row: the search leads, then the slot, type, rarity and sort selectors, the
  * class toggle, and a Reset that only appears once something is narrowing the list. One row
  * reads as one set of controls over the grid; stacked rows read as two toolbars.
  * @param types Item types present in the current results, with their counts.
@@ -131,6 +196,10 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
     Browse& browse = model().browse;
     const ImGuiStyle& style = ImGui::GetStyle();
     const bool narrowed = browse.narrowing() != 0 || !browse.type.empty() || browse.search[0] != '\0';
+    // Perks and materials go in no slot, so only gear and cosmetics offer the slot selector.
+    std::size_t firstSlot = 0;
+    std::size_t endSlot = 0;
+    const bool slotted = category_slots(browse.category, firstSlot, endSlot);
     // Everything after the search is measured, so the search takes exactly what is left.
     const auto toggle_width = [&](const char* label) {
         return ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
@@ -138,7 +207,8 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
     const float resetWidth = narrowed ? ImGui::CalcTextSize(kResetLabel).x
                                             + (style.FramePadding.x * 2.0F) + style.ItemSpacing.x
                                       : 0.0F;
-    const float trailing = pixels(kTypeFilterWidth) + pixels(kRarityFilterWidth)
+    const float slotWidth = slotted ? pixels(kSlotFilterWidth) + style.ItemSpacing.x : 0.0F;
+    const float trailing = slotWidth + pixels(kTypeFilterWidth) + pixels(kRarityFilterWidth)
                            + pixels(kSortWidth) + toggle_width(kClassOnlyLabel)
                            + toggle_width(kDummyItemsLabel) + resetWidth
                            + (style.ItemSpacing.x * 5.0F);
@@ -150,6 +220,10 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
                            browse.search,
                            sizeof browse.search);
     ImGui::SameLine();
+    if (slotted) {
+        draw_slot_filter(firstSlot, endSlot);
+        ImGui::SameLine();
+    }
 
     char preview[kTypePreviewCapacity]{};
     if (browse.type.empty()) {
@@ -229,6 +303,7 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
         browse.rarity = 0;
         browse.classOnly = true;
         browse.includeInternal = false;
+        browse.slot = -1;
         browse.type.clear();
         browse.search[0] = '\0';
         model().results.key.clear();
@@ -241,6 +316,7 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
     return query + "|" + browse.type + "|" + std::to_string(static_cast<int>(browse.category)) + ":"
            + std::to_string(browse.rarity) + ":" + std::to_string(static_cast<int>(browse.sort)) + ":"
            + std::to_string(browse.classOnly) + ":" + std::to_string(browse.includeInternal) + ":"
+           + std::to_string(browse.slot) + ":"
            + std::to_string(static_cast<unsigned>(character().characterClass));
 }
 

@@ -35,6 +35,17 @@ struct ScaledStat {
 /** An icon that belongs to no investment record, so it has no row to be named by. */
 inline constexpr std::uint32_t kNoIconRow = 0xFFFFFFFFU;
 
+/**
+ * An item definition the catalog leaves out that still names an icon. It is kept only so the icon
+ * browser can say what uses an icon, which is why it carries nothing but names.
+ */
+struct IconOwner {
+    std::uint32_t tag{};
+    std::uint32_t hash{};
+    std::string name;
+    std::string type;
+};
+
 /** One icon container entry, from whichever package declares it. */
 struct IconRow {
     std::uint32_t tag{};
@@ -116,6 +127,10 @@ struct Catalog {
     /** Package icon container per character stat, in the same order as `statRows`. Zero when the
         installed build offers no icon for that stat, and the page then shows its name alone. */
     std::array<std::uint32_t, 6> statIconTags{};
+    /** Every stat that names an icon, as its stat row and the icon container, for the icon browser. */
+    std::vector<std::pair<std::uint16_t, std::uint32_t>> statIcons;
+    /** Item definitions outside `items` that name an icon. Empty until `sweep_icons` fills it. */
+    std::vector<IconOwner> iconOwners;
     /**
      * The icon containers the icon browser walks, filtered by the package that declares each.
      * At load this holds only the investment icons; `sweep_icons` replaces it with every icon
@@ -186,7 +201,9 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
  * @param catalog Loaded catalog, read for the icon class and the investment rows.
  * @param icons Receives every icon container found, sorted by package, row and tag.
  * @param packages Receives the package families in the order `IconRow::package` indexes them.
+ * @param owners Receives every item definition outside the catalog that names an icon.
  * @return True when the sweep completed, even if it found nothing.
  */
-bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages);
+bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages,
+                 std::vector<IconOwner>& owners);
 } // namespace dawn::state::editor

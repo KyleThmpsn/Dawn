@@ -148,9 +148,13 @@ void draw_ability_field(const edit::CatalogItem& definition,
 void draw_subclass_group(float labelWidth, float controlWidth) noexcept {
     Model& state = model();
     const edit::CatalogItem* current = equipped_subclass();
+    const bool equipped = character().equipment.slots[kSubclassSlot].has_value();
     controls::field_label("Subclass", labelWidth);
-    if (controls::begin_picker(
-            "##subclass", current != nullptr ? current->name.c_str() : "None", controlWidth)) {
+    if (controls::begin_picker("##subclass",
+                               current != nullptr ? current->name.c_str()
+                               : equipped         ? "Not in this build"
+                                                  : "None",
+                               controlWidth)) {
         for (const auto& definition : state.catalog.items) {
             if (!selectable_subclass(definition)) {
                 continue;
@@ -170,8 +174,16 @@ void draw_subclass_group(float labelWidth, float controlWidth) noexcept {
 
 void draw_ability_group(float labelWidth, float controlWidth) noexcept {
     const edit::CatalogItem* definition = equipped_subclass();
-    if (definition == nullptr || definition->abilities[0].empty()) {
+    if (!character().equipment.slots[kSubclassSlot]) {
         ImGui::TextDisabled("No subclass equipped.");
+        return;
+    }
+    if (definition == nullptr) {
+        ImGui::TextDisabled("The equipped subclass is not in the installed build.");
+        return;
+    }
+    if (definition->abilities[0].empty()) {
+        ImGui::TextDisabled("Dawn could not read this subclass's abilities.");
         return;
     }
     // The super and the melee lanes follow the attunement, so only the lanes the game lets a

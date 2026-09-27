@@ -3,12 +3,14 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "../../../filesystem/path.h"
 
@@ -24,6 +26,9 @@ constexpr std::size_t kFieldCapacity = 128;
 /** A definition hash is 32 bits, and an ability entry 8, so a larger number is not one. */
 constexpr std::uint64_t kLargestDefinition = 0xFFFFFFFFULL;
 constexpr std::uint64_t kLargestEntry = 0xFFULL;
+/** An item level is a signed 32-bit number, and an item carries at most this many socket lanes. */
+constexpr std::uint64_t kLargestLevel = 0x7FFFFFFFULL;
+constexpr std::size_t kPlugLimit = state::account::inventory::kPlugCapacity;
 
 /** Moves past spaces and tabs. */
 void skip_space(std::string_view text, std::size_t& at) noexcept {
@@ -190,6 +195,34 @@ void put_utf8(std::string& out, std::uint32_t code) {
     return true;
 }
 
+/** Reads one list of plug hashes, such as `[123, 0, 456]`, and leaves `at` past its bracket. */
+[[nodiscard]] bool read_plugs(std::string_view text, std::size_t& at, std::vector<std::uint32_t>& plugs) {
+    plugs.clear();
+    if (at >= text.size() || text[at] != '[') {
+        return false;
+    }
+    ++at;
+    for (;;) {
+        skip_space(text, at);
+        if (at < text.size() && text[at] == ']') {
+            ++at;
+            return true;
+        }
+        if (!plugs.empty()) {
+            if (at >= text.size() || text[at] != ',') {
+                return false;
+            }
+            ++at;
+            skip_space(text, at);
+        }
+        std::uint64_t hash = 0;
+        if (plugs.size() >= kPlugLimit || !read_number(text, at, hash) || hash > kLargestDefinition) {
+            return false;
+        }
+        plugs.push_back(static_cast<std::uint32_t>(hash));
+    }
+}
+
 /**
  * Reads the loadout one line holds. The writer puts each loadout on a line of its own with its
  * fields in a fixed order, so each field is searched for after the one before it.
@@ -221,30 +254,51 @@ void put_utf8(std::string& out, std::uint32_t code) {
     if (!seek_key(line, at, "\"items\"") || at >= line.size() || line[at] != '[') {
         return false;
     }
-    // Nothing inside the items can hold a bracket, so the first one closing is the list's end.
-    const std::size_t end = line.find(']', at);
-    if (end == std::string_view::npos) {
-        return false;
-    }
-    const std::string_view items = line.substr(0, end);
-    for (std::size_t cursor = at;;) {
-        const std::size_t open = items.find('{', cursor);
-        if (open == std::string_view::npos) {
-            break;
+    ++at;
+    // An item holds numbers, one id and one list of numbers, and no object of its own, so the first
+    // closing brace after it opens is its end, and every search stays inside that one item.
+    for (;;) {
+        skip_space(line, at);
+        if (at < line.size() && line[at] == ',') {
+            ++at;
+            skip_space(line, at);
         }
-        cursor = open;
+        if (at >= line.size()) {
+            return false;
+        }
+        if (line[at] == ']') {
+            return true;
+        }
+        const std::size_t close = line[at] == '{' ? line.find('}', at) : std::string_view::npos;
+        if (close == std::string_view::npos) {
+            return false;
+        }
+        const std::string_view item = line.substr(0, close);
+        std::size_t cursor = at;
         std::uint64_t slot = 0;
         std::uint64_t instance = 0;
         std::uint64_t definition = 0;
-        if (!seek_key(items, cursor, "\"slot\"") || !read_number(items, cursor, slot)
-            || !seek_key(items, cursor, "\"instance\"") || !read_id(items, cursor, instance)
-            || !seek_key(items, cursor, "\"definition\"") || !read_number(items, cursor, definition)
+        if (!seek_key(item, cursor, "\"slot\"") || !read_number(item, cursor, slot)
+            || !seek_key(item, cursor, "\"instance\"") || !read_id(item, cursor, instance)
+            || !seek_key(item, cursor, "\"definition\"") || !read_number(item, cursor, definition)
             || slot >= out.pieces.size() || definition > kLargestDefinition) {
             return false;
         }
-        out.pieces[slot] = {instance, static_cast<std::uint32_t>(definition)};
+        edit::SavedPiece piece{instance, static_cast<std::uint32_t>(definition), 0, {}};
+        // The level and the plugs came later, so a loadout saved before them reads without them.
+        std::uint64_t level = 0;
+        if (seek_key(item, cursor, "\"level\"")) {
+            if (!read_number(item, cursor, level) || level > kLargestLevel) {
+                return false;
+            }
+            piece.level = static_cast<std::int32_t>(level);
+        }
+        if (seek_key(item, cursor, "\"plugs\"") && !read_plugs(item, cursor, piece.plugs)) {
+            return false;
+        }
+        out.pieces[slot] = std::move(piece);
+        at = close + 1;
     }
-    return true;
 }
 
 /** Writes one string as JSON, escaping the quote, the backslash and every control character. */
@@ -331,12 +385,23 @@ bool save(const std::vector<edit::SavedLoadout>& loadouts) noexcept {
             }
             (void)std::snprintf(field,
                                 sizeof field,
-                                "%s{\"slot\": %zu, \"instance\": \"0x%016llX\", \"definition\": %lu}",
+                                "%s{\"slot\": %zu, \"instance\": \"0x%016llX\", \"definition\": %lu, "
+                                "\"level\": %ld, \"plugs\": [",
                                 first ? "" : ", ",
                                 slot,
                                 static_cast<unsigned long long>(piece.instance),
-                                static_cast<unsigned long>(piece.definition));
+                                static_cast<unsigned long>(piece.definition),
+                                static_cast<long>((std::max)(piece.level, std::int32_t{0})));
             document += field;
+            for (std::size_t lane = 0; lane < piece.plugs.size(); ++lane) {
+                (void)std::snprintf(field,
+                                    sizeof field,
+                                    "%s%lu",
+                                    lane == 0 ? "" : ", ",
+                                    static_cast<unsigned long>(piece.plugs[lane]));
+                document += field;
+            }
+            document += "]}";
             first = false;
         }
         document += index + 1 == loadouts.size() ? "]}\n" : "]},\n";

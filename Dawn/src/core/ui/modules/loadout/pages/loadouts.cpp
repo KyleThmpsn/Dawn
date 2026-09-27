@@ -117,7 +117,7 @@ void save_current() noexcept {
     if (name.empty()) {
         name = "Loadout " + std::to_string(saved_by(owner.soid) + 1);
     }
-    loadouts.entries.push_back(edit::capture_loadout(owner, name));
+    loadouts.entries.push_back(edit::capture_loadout(owner, model().catalog, name));
     if (!persist()) {
         loadouts.entries.pop_back();
         return;
@@ -131,7 +131,7 @@ void save_current() noexcept {
 /** Replaces what one loadout holds with what is equipped now, keeping its name. */
 void update_saved(edit::SavedLoadout& entry) noexcept {
     edit::SavedLoadout previous = entry;
-    entry = edit::capture_loadout(character(), previous.name);
+    entry = edit::capture_loadout(character(), model().catalog, previous.name);
     if (!persist()) {
         entry = std::move(previous);
         return;
@@ -159,18 +159,24 @@ void delete_saved(std::size_t index) noexcept {
 }
 
 /**
- * Equips one saved loadout and says what it came to. A piece the loadout could not put back, gone
- * from the character or from the build, is counted in the message rather than refusing the rest.
+ * Equips one saved loadout and says what it came to. A piece whose copy has gone is made again from
+ * the build, and the loadout is pointed at the new copy so the next equip finds it rather than making
+ * another. A piece the build no longer carries is counted in the message rather than refusing the rest.
  * @return True when the sheet should close, so the outcome can be read in the bar behind it.
  */
-bool equip_saved(const edit::SavedLoadout& loadout) noexcept {
+bool equip_saved(edit::SavedLoadout& loadout) noexcept {
     Model& state = model();
     edit::LoadoutResult result;
     std::string refused;
-    const bool changed = edit::apply_loadout(
-        *state.draft, state.catalog, state.character, loadout, result, refused);
+    const bool changed = edit::apply_loadout(*state.draft,
+                                             state.catalog,
+                                             state.character,
+                                             loadout,
+                                             level_of(state.grant.power),
+                                             result,
+                                             refused);
     char message[kMessageCapacity]{};
-    if (result.equipped == 0) {
+    if (result.equipped == 0 && result.recreated == 0) {
         (void)std::snprintf(message,
                             sizeof message,
                             "None of %s's pieces are available on this character.",
@@ -178,19 +184,35 @@ bool equip_saved(const edit::SavedLoadout& loadout) noexcept {
         report(message, true);
         return false;
     }
-    if (result.unavailable == 0) {
-        (void)std::snprintf(message,
-                            sizeof message,
-                            changed ? "Equipped %s." : "%s is already equipped.",
-                            loadout.name.c_str());
-    } else {
-        (void)std::snprintf(message,
-                            sizeof message,
-                            "%s %s; %zu of %zu pieces are no longer available.",
-                            changed ? "Equipped" : "Already equipped:",
-                            loadout.name.c_str(),
-                            result.unavailable,
-                            result.saved);
+    bool repointed = true;
+    if (result.recreated != 0) {
+        for (std::size_t slot = 0; slot < result.replaced.size(); ++slot) {
+            if (result.replaced[slot] != 0) {
+                loadout.pieces[slot].instance = result.replaced[slot];
+            }
+        }
+        repointed = persist();
+    }
+    int written = std::snprintf(message,
+                                sizeof message,
+                                changed ? "Equipped %s." : "%s is already equipped.",
+                                loadout.name.c_str());
+    const auto append = [&](const char* format, auto... values) {
+        if (written >= 0 && static_cast<std::size_t>(written) < sizeof message) {
+            written += std::snprintf(message + written, sizeof message - static_cast<std::size_t>(written), format, values...);
+        }
+    };
+    if (result.recreated != 0) {
+        append(" Made %zu missing %s again.", result.recreated, result.recreated == 1 ? "piece" : "pieces");
+    }
+    if (result.unavailable != 0) {
+        append(" %zu of %zu %s unavailable.",
+               result.unavailable,
+               result.saved,
+               result.saved == 1 ? "piece is" : "pieces are");
+    }
+    if (!repointed) {
+        append(" The loadouts file could not be updated to name them.");
     }
     if (!changed) {
         report(message, false);
@@ -205,13 +227,41 @@ bool equip_saved(const edit::SavedLoadout& loadout) noexcept {
 }
 
 /**
- * Draws one saved piece: its icon framed in its rarity, veiled when the piece is no longer
- * available, or a recess where the slot was empty or the build no longer carries the item. Under
- * the pointer it shows the item's own tooltip, as a card does, from the character's own copy when
- * it still holds one, so the tooltip shows that copy's rolls.
+ * @return The copy equipping a loadout would make of one piece that has gone: the stock item with
+ * each saved plug the build still carries fitted over its defaults, at the level it would take.
+ * @param slot Equipment slot the piece fills, whose current item lends its level to an older save.
+ */
+[[nodiscard]] edit::Item remade_copy(const edit::SavedPiece& piece, std::size_t slot) noexcept {
+    const Model& state = model();
+    edit::Item copy;
+    copy.definitionHash = piece.definition;
+    // A non-zero id, so the tooltip titles the copy by its own level rather than the grant's.
+    copy.instanceSoid = piece.instance;
+    // Clamped as the equip clamps it, to the levels whose Power the game can hold.
+    const auto& current = character().equipment.slots[slot];
+    copy.level = std::clamp(piece.level > 0 ? piece.level : current ? current->level : level_of(state.grant.power),
+                            0,
+                            edit::kMaximumItemLevel);
+    if (!edit::materialize(copy, state.catalog)) {
+        return copy;
+    }
+    for (std::size_t lane = 0; lane < piece.plugs.size() && lane < copy.sockets.plugCount; ++lane) {
+        if (piece.plugs[lane] != 0 && state.catalog.find(piece.plugs[lane]) != nullptr) {
+            copy.sockets.plugs[lane] = piece.plugs[lane];
+        }
+    }
+    return copy;
+}
+
+/**
+ * Draws one saved piece: its icon framed in its rarity, veiled when the piece is unavailable, or a
+ * recess where the slot was empty or the build no longer carries the item. Under the pointer it
+ * shows the item's own tooltip, as a card does: from the character's own copy when it still holds
+ * one, and for a piece whose copy has gone, the copy equipping would make.
  */
 void draw_piece(const edit::SavedPiece& piece,
                 edit::PieceState standing,
+                std::size_t slot,
                 ImVec2 at,
                 float extent,
                 bool rowHovered) noexcept {
@@ -228,11 +278,16 @@ void draw_piece(const edit::SavedPiece& piece,
     if (standing == edit::PieceState::unavailable) {
         draw->AddRectFilled(at, corner, ImGui::GetColorU32(kUnavailableVeil));
     }
-    if (rowHovered && ImGui::IsMouseHoveringRect(at, corner)) {
-        const edit::Item* owned = find_owned_item(piece.instance);
-        tooltip::draw(*definition,
-                      owned != nullptr && owned->definitionHash == piece.definition ? owned : nullptr);
+    if (!rowHovered || !ImGui::IsMouseHoveringRect(at, corner)) {
+        return;
     }
+    if (standing == edit::PieceState::missing) {
+        const edit::Item copy = remade_copy(piece, slot);
+        tooltip::draw(*definition, &copy);
+        return;
+    }
+    const edit::Item* owned = find_owned_item(piece.instance);
+    tooltip::draw(*definition, owned != nullptr && owned->definitionHash == piece.definition ? owned : nullptr);
 }
 
 /** @return The width a word button takes for its label, at the height of the line it sits on. */
@@ -265,15 +320,17 @@ void draw_piece(const edit::SavedPiece& piece,
     std::array<edit::PieceState, inv::kEquipmentSlotCount> standing{};
     std::size_t stowed = 0;
     std::size_t equipped = 0;
+    std::size_t missing = 0;
     std::size_t unavailable = 0;
     for (std::size_t slot = 0; slot < standing.size(); ++slot) {
         standing[slot] = edit::piece_state(owner, state.catalog, entry.pieces[slot]);
         stowed += standing[slot] == edit::PieceState::stowed ? 1U : 0U;
         equipped += standing[slot] == edit::PieceState::equipped ? 1U : 0U;
+        missing += standing[slot] == edit::PieceState::missing ? 1U : 0U;
         unavailable += standing[slot] == edit::PieceState::unavailable ? 1U : 0U;
     }
-    // Nothing left to put on: every piece still held is already on.
-    const bool inPlace = stowed == 0 && equipped != 0;
+    // Nothing left to put on: every piece is already on, and none has to be made again.
+    const bool inPlace = stowed == 0 && missing == 0 && equipped != 0;
 
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::SetNextItemAllowOverlap();
@@ -293,6 +350,7 @@ void draw_piece(const edit::SavedPiece& piece,
     // stands at the height of the band.
     draw_piece(entry.pieces[kSubclassSlot],
                standing[kSubclassSlot],
+               kSubclassSlot,
                {origin.x + padding, origin.y + padding},
                emblem,
                hovered);
@@ -322,6 +380,13 @@ void draw_piece(const edit::SavedPiece& piece,
         end -= pixels(kWordGap) + ImGui::CalcTextSize(count).x;
         draw->AddText({end, baseline}, ImGui::GetColorU32(tooltip::pending()), count);
     }
+    // A piece whose copy has gone is made again on equip, which is worth saying but is no fault.
+    if (missing != 0) {
+        char count[kLineCapacity]{};
+        (void)std::snprintf(count, sizeof count, "%zu to remake", missing);
+        end -= pixels(kWordGap) + ImGui::CalcTextSize(count).x;
+        draw->AddText({end, baseline}, ImGui::GetColorU32(tooltip::muted()), count);
+    }
     (void)art::push_title(nameSize, 0.0F);
     art::clipped_text(art::shout(entry.name),
                       {textLeft, top},
@@ -337,7 +402,7 @@ void draw_piece(const edit::SavedPiece& piece,
         if (slot == kLastWeaponSlot + 1) {
             x += pixels(kPieceGroupGap) - pixels(kPieceGap);
         }
-        draw_piece(entry.pieces[slot], standing[slot], {x, stripTop}, piece, hovered);
+        draw_piece(entry.pieces[slot], standing[slot], slot, {x, stripTop}, piece, hovered);
         x += piece + pixels(kPieceGap);
     }
 

@@ -264,7 +264,9 @@ bool adjust_stats(Item& item, const Catalog& catalog, const Stats& targets, Stat
 }
 bool give(Draft& draft, const Catalog& catalog, std::size_t characterIndex, std::uint32_t hash, int quantity, int power, bool shouldEquip, std::string& error) {
     const auto* definition = catalog.find(hash);
-    if (characterIndex >= draft.after.characterCount || !definition || quantity <= 0 || power < 0 || power > kMaximumItemLevel) { error = "Choose a valid item, quantity and item level (0-106)."; return false; }
+    if (characterIndex >= draft.after.characterCount || !definition || quantity <= 0 || power < 0 || power > kMaximumItemLevel) {
+        error = "Choose a valid item, quantity and item level."; return false;
+    }
     auto staged = std::make_unique<AccountState>(draft.after);
     auto& character = staged->characters[characterIndex];
     build_data::inventory::buckets::Descriptor bucket{};
@@ -360,65 +362,116 @@ bool transfer(Draft& draft, const Catalog& catalog, std::size_t from, std::size_
 PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept {
     if (piece.instance == 0) return PieceState::empty;
     // A definition the installed build no longer carries, as a removed package leaves behind, has
-    // nothing left to equip it as.
-    if (!catalog.find(piece.definition)) return PieceState::unavailable;
+    // nothing left to make it from, and one of another class could not be held if it were made.
+    const CatalogItem* definition = catalog.find(piece.definition);
+    if (!definition || !fits_class(*definition, character.characterClass)) return PieceState::unavailable;
+    // An instance id only names one item within one account, so the item it names now has to be the
+    // one saved: after a reset the same id can belong to something else entirely.
     for (const auto& slot : character.equipment.slots)
-        if (slot && slot->instanceSoid == piece.instance) return slot->definitionHash == piece.definition ? PieceState::equipped : PieceState::unavailable;
+        if (slot && slot->instanceSoid == piece.instance && slot->definitionHash == piece.definition) return PieceState::equipped;
     for (std::size_t i = 0; i < character.inventory.count; ++i) {
         const auto& stowed = character.inventory.values[i];
-        if (stowed.instanceSoid != piece.instance) continue;
-        // An instance id only names one item within one account, so the item it names now has to
-        // be the one saved: after a reset the same id can belong to something else entirely.
-        return stowed.definitionHash == piece.definition && !stowed.postmaster ? PieceState::stowed : PieceState::unavailable;
+        if (stowed.instanceSoid == piece.instance && stowed.definitionHash == piece.definition)
+            return stowed.postmaster ? PieceState::unavailable : PieceState::stowed;
     }
-    return PieceState::unavailable;
+    return PieceState::missing;
 }
-SavedLoadout capture_loadout(const CharacterState& character, std::string name) {
+SavedLoadout capture_loadout(const CharacterState& character, const Catalog& catalog, std::string name) {
     SavedLoadout loadout; loadout.character = character.soid; loadout.name = std::move(name);
-    for (std::size_t slot = 0; slot < loadout.pieces.size(); ++slot)
-        if (const auto& item = character.equipment.slots[slot]) loadout.pieces[slot] = {item->instanceSoid, item->definitionHash};
+    for (std::size_t slot = 0; slot < loadout.pieces.size(); ++slot) {
+        const auto& item = character.equipment.slots[slot];
+        if (!item) continue;
+        SavedPiece& piece = loadout.pieces[slot];
+        piece = {item->instanceSoid, item->definitionHash, item->level, {}};
+        // The plugs are kept as fitted, so a copy made again from them is the one that was saved.
+        Item resolved = *item;
+        if (materialize(resolved, catalog))
+            for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane) piece.plugs.push_back(resolved.sockets.plugs[lane].value_or(0U));
+    }
     for (std::size_t lane = 0; lane < kAbilityFields.size(); ++lane) loadout.abilities[lane] = character.*kAbilityFields[lane];
     return loadout;
 }
-bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const SavedLoadout& loadout, LoadoutResult& result, std::string& error) {
+namespace {
+/**
+ * Makes one saved piece again and stows it: a new instance at the given level, with each saved plug
+ * the build still carries fitted into its lane. The account gives the instance its id.
+ * @return The new instance id, or zero when the piece cannot be made or has no room.
+ */
+std::uint64_t recreate(AccountState& account, CharacterState& character, const Catalog& catalog, const SavedPiece& piece, int level) {
+    const CatalogItem* definition = catalog.find(piece.definition);
+    build_data::inventory::buckets::Descriptor bucket{};
+    if (!definition || !fits_class(*definition, character.characterClass)
+        || !build_data::find_inventory_bucket_descriptor(definition->definition.bucketId, bucket)
+        || bucket.arraySelector != build_data::inventory::buckets::ArraySelector::character
+        || character.inventory.count >= character.inventory.values.size() || !inv::has_room(character, bucket.bucketId)) return 0;
+    Item item; item.definitionHash = piece.definition; item.level = std::clamp(level, 0, kMaximumItemLevel); item.quantity = 1;
+    if (!piece.plugs.empty() && materialize(item, catalog)) {
+        for (std::size_t lane = 0; lane < piece.plugs.size() && lane < item.sockets.plugCount; ++lane) {
+            const CatalogItem* plug = piece.plugs[lane] != 0 ? catalog.find(piece.plugs[lane]) : nullptr;
+            // A plug the build no longer carries, or one the lane no longer offers, keeps the default.
+            if (plug != nullptr) (void)set_plug(item, catalog, lane, plug->definition.definitionIndex, PlugScope::all);
+        }
+    }
+    if (!persistence::next_item_instance_soid(account, item.instanceSoid) || !bump(character, item)) return 0;
+    character.inventory.values[character.inventory.count++] = item;
+    return item.instanceSoid;
+}
+}
+bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const SavedLoadout& loadout,
+                   int fallbackLevel, LoadoutResult& result, std::string& error) {
     result = {};
     if (characterIndex >= draft.after.characterCount) return false;
-    auto staged = std::make_unique<CharacterState>(draft.after.characters[characterIndex]);
+    // The whole account is staged, because a piece made again takes its id from the account.
+    auto staged = std::make_unique<AccountState>(draft.after);
+    CharacterState& character = staged->characters[characterIndex];
     std::vector<std::uint64_t> plain, exotic;
-    for (const auto& piece : loadout.pieces) {
-        const PieceState standing = piece_state(*staged, catalog, piece);
+    bool changed = false;
+    for (std::size_t slot = 0; slot < loadout.pieces.size(); ++slot) {
+        const SavedPiece& piece = loadout.pieces[slot];
+        const PieceState standing = piece_state(character, catalog, piece);
         if (standing == PieceState::empty) continue;
         ++result.saved;
         if (standing == PieceState::unavailable) { ++result.unavailable; continue; }
         if (standing == PieceState::equipped) { ++result.equipped; continue; }
+        std::uint64_t id = piece.instance;
+        if (standing == PieceState::missing) {
+            // The level it was saved at; for a loadout saved before levels were kept, the level of
+            // what it replaces.
+            const auto& current = character.equipment.slots[slot];
+            const int level = piece.level > 0 ? piece.level : current ? current->level : fallbackLevel;
+            id = recreate(*staged, character, catalog, piece, level);
+            if (id == 0) { ++result.unavailable; continue; }
+            result.replaced[slot] = id;
+            ++result.recreated;
+            changed = true;
+        }
         const CatalogItem* definition = catalog.find(piece.definition);
-        (definition->definition.tier == static_cast<std::uint8_t>(build_data::items::Tier::exotic) ? exotic : plain).push_back(piece.instance);
+        (definition->definition.tier == static_cast<std::uint8_t>(build_data::items::Tier::exotic) ? exotic : plain).push_back(id);
     }
     // Plain pieces go on first. One can only lower the exotic count, so by the time an exotic goes
     // on, the exotic it would have clashed with has already been replaced.
-    bool changed = false;
     for (const auto* group : {&plain, &exotic}) for (const std::uint64_t id : *group) {
         std::string refused;
-        if (equip_character(*staged, catalog, id, refused)) { ++result.equipped; changed = true; } else ++result.unavailable;
+        if (equip_character(character, catalog, id, refused)) { ++result.equipped; changed = true; } else ++result.unavailable;
     }
     // The abilities belong to the subclass: they are put back only when the saved subclass is the
     // one on now, and only an entry that subclass offers for its lane, or the apply would refuse.
-    const SavedPiece& savedSubclass = loadout.pieces[kSubclassSlot];
-    const auto& subclassSlot = staged->equipment.slots[kSubclassSlot];
-    const CatalogItem* subclass = savedSubclass.instance != 0 && subclassSlot && subclassSlot->instanceSoid == savedSubclass.instance
+    const std::uint64_t savedSubclass = result.replaced[kSubclassSlot] != 0 ? result.replaced[kSubclassSlot] : loadout.pieces[kSubclassSlot].instance;
+    const auto& subclassSlot = character.equipment.slots[kSubclassSlot];
+    const CatalogItem* subclass = savedSubclass != 0 && subclassSlot && subclassSlot->instanceSoid == savedSubclass
         ? catalog.find(subclassSlot->definitionHash) : nullptr;
     for (std::size_t lane = 0; subclass && lane < kAbilityFields.size(); ++lane) {
         for (const auto& choice : subclass->abilities[lane]) {
             if (choice.entry != loadout.abilities[lane]) continue;
-            if (staged.get()->*kAbilityFields[lane] != choice.entry) { staged.get()->*kAbilityFields[lane] = choice.entry; changed = true; }
+            if (character.*kAbilityFields[lane] != choice.entry) { character.*kAbilityFields[lane] = choice.entry; changed = true; }
             break;
         }
     }
     if (!changed) { error = result.equipped != 0 ? "This loadout is already equipped." : "None of this loadout's pieces are available."; return false; }
-    draft.after.characters[characterIndex] = *staged; draft.dirty = true; error = "Loadout equipped in draft."; return true;
+    draft.after = *staged; draft.dirty = true; error = "Loadout equipped in draft."; return true;
 }
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const std::array<bool, inv::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error) {
-    if (power < 0 || power > kMaximumItemLevel) { error = "Item level must be between 0 and 106."; return false; }
+    if (power < 0 || power > kMaximumItemLevel) { error = "That item level is out of range."; return false; }
     if (characterIndex >= draft.after.characterCount) return false;
     auto staged = std::make_unique<Draft>(draft);
     auto& character = staged->after.characters[characterIndex];
@@ -462,44 +515,17 @@ bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex,
     if (!any) { error = "Choose at least one slot to randomize."; return false; }
     draft.after = staged->after; draft.dirty = true; error = "Random loadout staged. Your previous equipment is in inventory."; return true;
 }
-// An earlier editor labelled its power field "power" but wrote the value straight into the item
-// level, which the game shows at ten Power per level. A level this far above the installed reward
-// tiers was typed as Power, and dividing it back only ever restores a plausible level.
-constexpr std::int32_t kImplausibleLevel = 200;
-
-/** @return True when one item's level was written as Power and has been divided back. */
-bool restore_level(Item& item) {
-    if (item.level <= kImplausibleLevel || item.level % equipment::light::kPowerPerLevel != 0) return false;
-    const auto restored = item.level / equipment::light::kPowerPerLevel;
-    if (restored > kImplausibleLevel) return false;
-    item.level = restored;
-    return true;
-}
-
 bool normalize(Draft& draft, std::string& message) {
     bool serials = false;
-    std::size_t levels = 0;
     for (std::size_t c = 0; c < draft.after.characterCount; ++c) {
         auto& character = draft.after.characters[c];
-        for (auto& slot : character.equipment.slots) if (slot) levels += restore_level(*slot) ? 1 : 0;
-        for (std::size_t i = 0; i < character.inventory.count; ++i) {
-            levels += restore_level(character.inventory.values[i]) ? 1 : 0;
-        }
         const auto before = character.nextInventorySerial;
         if (!prepare_serial_counter(character)) continue;
         serials |= character.nextInventorySerial != before;
     }
-    if (!serials && levels == 0) return false;
+    if (!serials) return false;
     draft.dirty = true;
-    if (levels != 0) {
-        char line[128]{};
-        (void)std::snprintf(line, sizeof line,
-            "Repaired the Power on %zu item%s stored as a raw level. Apply to finish the fix.",
-            levels, levels == 1 ? "" : "s");
-        message = line;
-    } else {
-        message = "Repaired an item revision this account could not publish. Apply to finish the fix.";
-    }
+    message = "Repaired an item revision this account could not publish. Apply to finish the fix.";
     return true;
 }
 bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& output, std::string& error) {
@@ -524,9 +550,9 @@ bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& ou
                 error = "An item exceeds its installed stack limit or is missing from the catalog."; return false;
             }
             const auto* old = prior(item.instanceSoid);
-            // Preserve existing saves; enforce the cap when authoring a new level.
+            // A level whose Power the game cannot hold is refused, unless the save already had it.
             if (item.level > kMaximumItemLevel && (!old || item.level != old->level)) {
-                error = "Item level must be between 0 and 106."; return false;
+                error = "That item level is out of range."; return false;
             }
             if (old && item != *old && item.mutationSerial <= old->mutationSerial && !bump(character, item)) {
                 error = "Item revision limit reached."; return false;

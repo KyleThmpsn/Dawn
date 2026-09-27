@@ -1,13 +1,20 @@
 #pragma once
 #include "catalog.h"
+#include "../equipment/light/definition.h"
 #include <iterator>
+#include <limits>
 #include <random>
 #include <tuple>
 
 namespace dawn::state::editor {
 using Item = account::inventory::Item;
 using Stats = std::array<int, 6>;
-inline constexpr int kMaximumItemLevel = 106;
+/**
+ * Highest item level the editor writes: the last whose Power, ten per level, still fits the game's
+ * 32-bit Power. Dawn asks only for a level of zero or more, so this is the one bound that is real.
+ */
+inline constexpr int kMaximumItemLevel =
+    (std::numeric_limits<std::int32_t>::max)() / equipment::light::kPowerPerLevel;
 struct Draft {
     AccountState before, after;
     bool dirty{};
@@ -49,7 +56,10 @@ bool pull_from_postmaster(Draft& draft, const Catalog& catalog, std::size_t char
  */
 bool transfer(Draft& draft, const Catalog& catalog, std::size_t from, std::size_t to, std::uint64_t id, std::string& error);
 
-/** One piece of a saved loadout: the instance that was equipped, and the item it was. */
+/**
+ * One piece of a saved loadout: the instance that was equipped, the item it was, and its roll, so a
+ * copy that has gone can be made again as it was.
+ */
 struct SavedPiece {
     std::uint64_t instance{};
     /**
@@ -58,6 +68,10 @@ struct SavedPiece {
      * piece is put back on.
      */
     std::uint32_t definition{};
+    /** Item level it was saved at, or zero for a loadout saved before levels were kept. */
+    std::int32_t level{};
+    /** Plug fitted in each socket lane when saved, by definition hash, with zero for an empty lane. */
+    std::vector<std::uint32_t> plugs;
 };
 /** One saved loadout: what one character had equipped, and the abilities of its subclass. */
 struct SavedLoadout {
@@ -75,8 +89,12 @@ struct LoadoutResult {
     std::size_t saved{};
     /** Pieces now equipped, whether they were put on or were already in place. */
     std::size_t equipped{};
-    /** Pieces skipped: gone from the character, gone from the build, or now a different item. */
+    /** Pieces that had gone and were made again from the build. */
+    std::size_t recreated{};
+    /** Pieces skipped: gone from the build, not this class's, at the postmaster, or without room. */
     std::size_t unavailable{};
+    /** New instance per slot of each piece made again, or zero, so the loadout can name it next time. */
+    std::array<std::uint64_t, account::inventory::kEquipmentSlotCount> replaced{};
 };
 /** Where one saved piece stands on a character now. */
 enum class PieceState : std::uint8_t {
@@ -86,7 +104,12 @@ enum class PieceState : std::uint8_t {
     equipped,
     /** Held and stowed as the item that was saved, so equipping the loadout puts it on. */
     stowed,
-    /** Gone from the character or the build, at the postmaster, or its id now names another item. */
+    /**
+     * The copy saved is gone, or its id now names another item, but the build still carries the
+     * item and this class can hold it, so equipping the loadout makes it again.
+     */
+    missing,
+    /** Gone from the build, not this class's, or waiting at the postmaster. */
     unavailable,
 };
 /**
@@ -95,15 +118,18 @@ enum class PieceState : std::uint8_t {
  * equip would skip.
  */
 PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept;
-/** @return What one character has equipped now, as a loadout under the given name. */
-SavedLoadout capture_loadout(const CharacterState& character, std::string name);
+/** @return What one character has equipped now, with each piece's level and plugs, as a loadout. */
+SavedLoadout capture_loadout(const CharacterState& character, const Catalog& catalog, std::string name);
 /**
- * Equips a saved loadout on one character. A piece that is no longer available is skipped rather
- * than refusing the rest. The subclass's abilities are put back only when the saved subclass is
- * the one equipped, and only entries it offers, so the result is always one the game accepts.
+ * Equips a saved loadout on one character. A piece whose copy has gone is made again from the build,
+ * at its saved level with its saved plugs; one the build no longer carries is skipped rather than
+ * refusing the rest. The subclass's abilities are put back only when the saved subclass is the one
+ * equipped, and only entries it offers, so the result is always one the game accepts.
+ * @param fallbackLevel Level a piece is made at when neither its save nor its slot gives one.
  * @return True when anything changed. `error` says why nothing did otherwise.
  */
-bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t character, const SavedLoadout& loadout, LoadoutResult& result, std::string& error);
+bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t character, const SavedLoadout& loadout,
+                   int fallbackLevel, LoadoutResult& result, std::string& error);
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t character, const std::array<bool, account::inventory::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error);
 bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& output, std::string& error);
 

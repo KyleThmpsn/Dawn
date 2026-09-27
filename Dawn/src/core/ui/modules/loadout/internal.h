@@ -29,8 +29,8 @@ inline constexpr std::size_t kSubclassSlot = 11;
 /** Slots 0 to 2 are weapons, 3 to 7 armor; the rest are cosmetic. Used to jump to a category. */
 inline constexpr std::size_t kLastWeaponSlot = 2;
 inline constexpr std::size_t kLastArmorSlot = 7;
-/** Highest authored item level, which the game shows as ten times this. */
-inline constexpr int kMaximumItemLevel = 9999;
+/** Highest authored item level, which the game shows as ten times this. The edit layer owns it. */
+inline constexpr int kMaximumItemLevel = edit::kMaximumItemLevel;
 /** Range the power field offers, which covers every installed reward tier. */
 inline constexpr int kPowerSliderMaximum = 15000;
 
@@ -181,13 +181,16 @@ struct Browse {
     int rarity{};
     bool classOnly{true};
     bool includeInternal{};
+    /** Equipment slot the results are narrowed to, or -1 for every slot. A swap sets its own. */
+    int slot{-1};
     /** Empty shows every item type. */
     std::string type;
     char search[kSearchCapacity]{};
 
     /** @return Number of filters narrowing the results beyond the defaults. */
     [[nodiscard]] int narrowing() const noexcept {
-        return (rarity != 0 ? 1 : 0) + (classOnly ? 0 : 1) + (includeInternal ? 1 : 0);
+        return (rarity != 0 ? 1 : 0) + (classOnly ? 0 : 1) + (includeInternal ? 1 : 0)
+               + (slot >= 0 ? 1 : 0);
     }
 };
 
@@ -314,6 +317,7 @@ struct Model {
     std::atomic<IconSweepPhase> iconSweep{IconSweepPhase::idle};
     std::vector<edit::IconRow> sweptIcons;
     std::vector<std::string> sweptPackages;
+    std::vector<edit::IconOwner> sweptOwners;
     /** Icon browser: the first row on the page, and the edge it draws each tile at. */
     int iconRow{};
     /** 52 is the tooltip band's icon edge, so a browsed icon is seen at the size it will be used. */
@@ -327,12 +331,34 @@ struct Model {
     int iconViewed{-1};
     /** Raised by a tile and consumed by the page, which is the scope that owns the viewer. */
     bool iconViewRequested{};
+    /** The browser's find field, which takes a tag or a row, and whether the last find missed. */
+    char iconFind[kSearchCapacity]{};
+    bool iconFindMissed{};
+    /** What the viewer's last action came to, such as where an export went, and if it failed. */
+    std::string iconNote;
+    bool iconNoteFailed{};
+    /** Tag of the export the worker is still writing, or zero. */
+    std::uint32_t iconExporting{};
 
     /** Inventory page filter: a slot index, or -1 for every slot. */
     int inventorySlot{-1};
     char inventorySearch[kSearchCapacity]{};
     /** Profile page search, kept apart so switching pages does not carry one filter to the other. */
     char profileSearch[kSearchCapacity]{};
+
+    /**
+     * `reset` joins both workers before the model goes. Dawn skips that teardown when a hook cannot
+     * come off, and a joinable std::thread destroyed at exit calls std::terminate, so a worker still
+     * joinable here is detached instead. The loader stays joinable after it finishes.
+     */
+    ~Model() {
+        if (loader.joinable()) {
+            loader.detach();
+        }
+        if (iconSweeper.joinable()) {
+            iconSweeper.detach();
+        }
+    }
 };
 
 /** @return The module state. It exists for the whole time the page is registered. */

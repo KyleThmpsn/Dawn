@@ -107,13 +107,22 @@ constexpr const char* kUnlockLabel = "Unlock";
     return (count + perRow - 1) / perRow;
 }
 
-/** Sends the armory to the category that fills one equipment slot. */
+/**
+ * Sends the armory to what can fill one equipment slot: its category, narrowed to that slot, as
+ * the game opens a bucket on the items that go in it. The armory carries no subclasses, so the
+ * subclass goes to the character page, where its picker is.
+ */
 void browse_for_slot(std::size_t slot) noexcept {
     internal::Model& state = internal::model();
+    if (slot == internal::kSubclassSlot) {
+        state.view = internal::View::characters;
+        return;
+    }
     state.view = internal::View::armory;
     state.browse.category = slot <= internal::kLastWeaponSlot  ? internal::Category::weapons
                             : slot <= internal::kLastArmorSlot ? internal::Category::armor
                                                                : internal::Category::cosmetics;
+    state.browse.slot = static_cast<int>(slot);
     state.browse.type.clear();
 }
 
