@@ -2,11 +2,13 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <imgui.h>
 #include <string_view>
 
 #include "../registry/ui_module_registry.h"
 #include "../ui_module_descriptor.h"
+#include "art.h"
 #include "internal.h"
 #include "loadout.h"
 #include "preview.h"
@@ -44,6 +46,8 @@ constexpr std::uint64_t kDivergenceCheckIntervalMs = 500;
 constexpr std::uint64_t kRepublishWindowMs = 60000;
 /** Shown once a saved-only apply finally reaches a signed-in peer. */
 constexpr const char* kLateApplied = "Applied in game.";
+/** 64 bytes hold where a sent item went: a class name and a one-digit character slot. */
+constexpr std::size_t kSentMessageCapacity = 64;
 
 /**
  * Notices when the game changed the account under an editor that is not the one editing it.
@@ -70,6 +74,7 @@ void poll_account_divergence() noexcept {
             // line, and saying this over a refusal would report that refusal as applied.
             if (!state.draft->dirty) {
                 state.status = kLateApplied;
+                state.statusFailed = false;
             }
         }
     }
@@ -100,7 +105,15 @@ void consume_queued_apply() noexcept {
         return;
     }
     bool live = false;
-    if (!edit::apply(*state.draft, state.catalog, state.status, live)) {
+    const bool applied = edit::apply(*state.draft, state.catalog, state.status, live);
+    state.statusFailed = !applied;
+    // An edit's own note, such as what a loadout could not put back, leads the apply's outcome
+    // rather than being written over by it. It belongs to this apply whichever way it went.
+    if (applied && !state.editNote.empty()) {
+        state.status = state.editNote + " " + state.status;
+    }
+    state.editNote.clear();
+    if (!applied) {
         // A refused apply can mean the game moved the account on. Check that before the next frame
         // rather than waiting out the poll interval, so the banner and the message agree.
         state.lastDivergenceCheckTick = 0;
@@ -178,6 +191,30 @@ bool erase_owned_item(std::uint64_t instance) noexcept {
     return false;
 }
 
+bool send_item(std::uint64_t instance, std::size_t target) noexcept {
+    Model& state = model();
+    const bool sent =
+        edit::transfer(*state.draft, state.catalog, state.character, target, instance, state.status);
+    if (sent) {
+        const state::AccountState& account = state.draft->after;
+        char message[kSentMessageCapacity]{};
+        (void)std::snprintf(message,
+                            sizeof message,
+                            "Sent to %s %zu.",
+                            art::class_name(account.characters[target].characterClass),
+                            target + 1);
+        state.status = message;
+        // Carried into the apply, which otherwise says only that something was applied.
+        state.editNote = message;
+        // The item is no longer on this character, so a pane bound to it has nothing to show.
+        if (state.selection.instanceSoid == instance) {
+            clear_selection();
+        }
+    }
+    record_edit(sent);
+    return sent;
+}
+
 int power_of(int level) noexcept {
     std::int32_t power = 0;
     return state::equipment::light::item_power(level, power) ? power : 0;
@@ -201,6 +238,8 @@ void mark_changed(bool publish) noexcept {
 }
 
 void record_edit(bool succeeded) noexcept {
+    // The edit wrote its own outcome into the status; a refusal is marked so the bar sets it apart.
+    model().statusFailed = !succeeded;
     if (succeeded) {
         mark_changed(true);
     }
@@ -232,6 +271,8 @@ void reload_account() noexcept {
     // A discarded draft has no apply left to report on, so the retry must not speak for it later.
     state.republishUntilTick = 0;
     state.status = kIdleStatus;
+    state.statusFailed = false;
+    state.editNote.clear();
     // An account saved before the row-generation fix cannot be published until it is repaired.
     // Staging it here means opening the page is enough; instant mode then commits it at once.
     if (edit::normalize(*state.draft, state.status) && state.applyInstantly) {
@@ -310,6 +351,7 @@ void draw() noexcept {
         internal::consume_queued_apply();
     } catch (...) {
         internal::model().status = internal::kFrameFailure;
+        internal::model().statusFailed = true;
     }
 }
 

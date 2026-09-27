@@ -77,6 +77,27 @@ void draw_plug(const edit::CatalogItem& plug) noexcept;
 /** Closes a frame opened by `begin_frame`. */
 void end_frame() noexcept;
 
+/**
+ * Opens a sheet: the modal the editor lays over the page for one task, as the game lays its socket
+ * picker over the inventory. It is the tooltip's ground in a square hairlined frame with no title
+ * bar, dims the page behind it, and opens centred at the given size; it can then be dragged by its
+ * head. Every sheet the editor opens is this one frame at this one size, so no two of them can
+ * drift apart.
+ * @param id Popup id, which the caller opens with `ImGui::OpenPopup` from the same scope.
+ * @return True while the sheet is open. Call `end_sheet` only then.
+ */
+[[nodiscard]] bool begin_sheet(const char* id) noexcept;
+
+/** Closes a sheet opened by `begin_sheet`. */
+void end_sheet() noexcept;
+
+/**
+ * Heads a sheet: its title in the title cut, folded to capitals, over one muted line.
+ * @param title What the sheet is about, such as an item's name.
+ * @param detail The muted line under it.
+ */
+void draw_sheet_head(const std::string& title, const char* detail) noexcept;
+
 /** @return The padding the tooltip keeps inside its frame, in framebuffer pixels. */
 [[nodiscard]] float padding() noexcept;
 
@@ -85,6 +106,9 @@ void end_frame() noexcept;
 
 /** @return The colour a value waiting to be applied is set in. */
 [[nodiscard]] ImVec4 pending() noexcept;
+
+/** @return The colour of the rule between two rows of a list, the tooltip's own divider. */
+[[nodiscard]] ImVec4 rule_color() noexcept;
 
 /** Draws a divider across the whole frame at the cursor, and one block gap under it. */
 void draw_rule() noexcept;

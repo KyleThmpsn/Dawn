@@ -236,6 +236,24 @@ struct Randomizer {
     std::mt19937 engine{std::random_device{}()};
 };
 
+/** 64 bytes hold any loadout name a player types. */
+inline constexpr std::size_t kLoadoutNameCapacity = 64;
+
+/** Saved loadouts, read from the Dawn folder the first time the page needs them. */
+struct Loadouts {
+    bool loaded{};
+    /**
+     * False when a loadouts file is there but could not be read. Nothing is written over it then,
+     * because saving would replace every loadout it holds with only the ones read this session.
+     */
+    bool writable{true};
+    std::vector<edit::SavedLoadout> entries;
+    /** Name typed for the next loadout saved. */
+    char name[kLoadoutNameCapacity]{};
+    /** Loadout whose Delete was pressed once and now asks to be confirmed, or -1. */
+    int pendingDelete{-1};
+};
+
 /**
  * Whole editor state, owned by the module and reachable only through `model()`.
  * The draft is the only thing here the game can see, and only once an apply commits it.
@@ -250,8 +268,15 @@ struct Model {
     std::atomic_uint loadProgress{};
     std::string loadError;
 
-    /** Last outcome shown under the footer. */
+    /** Last outcome shown in the action bar: what an edit or an apply came to. */
     std::string status;
+    /** True when that outcome was a refusal, which the bar sets apart from a result. */
+    bool statusFailed{};
+    /**
+     * What the last edit had to say beyond succeeding, such as what a loadout could not put back.
+     * The apply that publishes the edit writes its own outcome over the status, so this leads it.
+     */
+    std::string editNote;
     /** Set when the running account moved on while the draft held unapplied edits. */
     bool accountDiverged{};
     /** Player setting: commit each edit to the running game as soon as it is made. */
@@ -272,8 +297,13 @@ struct Model {
     BrowseResults results;
     Grant grant;
     SocketPicker picker;
+    /** Owned instance waiting on the removal confirmation, or zero. */
+    std::uint64_t removal{};
+    /** Raised by a removal action and consumed by the page, the scope that owns the confirmation. */
+    bool removalRequested{};
     StatTargets targets;
     Randomizer randomizer;
+    Loadouts loadouts;
 
     /**
      * The icon sweep, which reads every package's entry table and so runs on its own thread, and
@@ -419,6 +449,30 @@ void settle_stat_targets(edit::Item& item, bool released) noexcept;
 
 /** Draws the perk picker modal when a socket row has opened it. */
 void draw_perk_picker() noexcept;
+
+/**
+ * Asks to remove one stowed item. Nothing is deleted until the page's confirmation is accepted,
+ * whichever action asked: the card's menu and the pane's own button both come through here.
+ * @param instance Owned instance id.
+ */
+void request_removal(std::uint64_t instance) noexcept;
+
+/** Draws the removal confirmation once an action has asked for one. */
+void draw_removal_confirm() noexcept;
+
+/**
+ * Sends one stowed item from the character being edited to another, and says where it went.
+ * @param instance Owned instance id.
+ * @param target Index of the character that receives it.
+ * @return True when the item was sent.
+ */
+bool send_item(std::uint64_t instance, std::size_t target) noexcept;
+
+/** Opens the saved loadouts sheet, from the scope that then draws it. */
+void open_loadouts() noexcept;
+
+/** Draws the saved loadouts sheet once it has been opened. */
+void draw_loadouts_modal() noexcept;
 
 /**
  * Draws every socket of one owned item as an editable row: the fitted plug's icon, its name, its

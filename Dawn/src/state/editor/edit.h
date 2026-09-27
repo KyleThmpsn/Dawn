@@ -37,6 +37,73 @@ bool adjustable_stats(const Item& item, const Catalog& catalog);
 bool give(Draft& draft, const Catalog& catalog, std::size_t character, std::uint32_t hash, int quantity, int power, bool equip, std::string& error);
 bool equip(Draft& draft, const Catalog& catalog, std::size_t character, std::uint64_t id, std::string& error);
 bool unequip(Draft& draft, const Catalog& catalog, std::size_t character, std::size_t slot, std::string& error);
+/**
+ * Pulls one item out of the character's postmaster into its own bucket, as the game's postmaster
+ * does. An item there cannot be equipped, so without this the only thing left to do with one is
+ * delete it. An account item that overflowed there, such as a material, is left for the game.
+ */
+bool pull_from_postmaster(Draft& draft, const Catalog& catalog, std::size_t character, std::uint64_t id, std::string& error);
+/**
+ * Moves one stowed item from one character to another. It keeps its identity, its rolls and its
+ * sockets, and takes a new revision from the character that receives it, as a transfer does in game.
+ */
+bool transfer(Draft& draft, const Catalog& catalog, std::size_t from, std::size_t to, std::uint64_t id, std::string& error);
+
+/** One piece of a saved loadout: the instance that was equipped, and the item it was. */
+struct SavedPiece {
+    std::uint64_t instance{};
+    /**
+     * The item the instance was. An instance id only names one item within one account, and a
+     * definition leaves the build with the package that added it, so both are checked before the
+     * piece is put back on.
+     */
+    std::uint32_t definition{};
+};
+/** One saved loadout: what one character had equipped, and the abilities of its subclass. */
+struct SavedLoadout {
+    /** Character the loadout was saved from, the only one it is offered to. */
+    std::uint64_t character{};
+    std::string name;
+    /** Piece per equipment slot, with a zero instance where the slot was empty. */
+    std::array<SavedPiece, account::inventory::kEquipmentSlotCount> pieces{};
+    /** Jump, grenade, super, melee and class ability entries, in the catalog's lane order. */
+    std::array<std::uint8_t, std::tuple_size_v<decltype(CatalogItem::abilities)>> abilities{};
+};
+/** What equipping a saved loadout came to. */
+struct LoadoutResult {
+    /** Pieces the loadout names. */
+    std::size_t saved{};
+    /** Pieces now equipped, whether they were put on or were already in place. */
+    std::size_t equipped{};
+    /** Pieces skipped: gone from the character, gone from the build, or now a different item. */
+    std::size_t unavailable{};
+};
+/** Where one saved piece stands on a character now. */
+enum class PieceState : std::uint8_t {
+    /** The slot was empty when the loadout was saved. */
+    empty,
+    /** On now, as the item that was saved. */
+    equipped,
+    /** Held and stowed as the item that was saved, so equipping the loadout puts it on. */
+    stowed,
+    /** Gone from the character or the build, at the postmaster, or its id now names another item. */
+    unavailable,
+};
+/**
+ * @return Where one saved piece stands on one character now. Equipping a loadout and the sheet
+ * that previews it both read a piece through this, so the preview never promises a piece the
+ * equip would skip.
+ */
+PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept;
+/** @return What one character has equipped now, as a loadout under the given name. */
+SavedLoadout capture_loadout(const CharacterState& character, std::string name);
+/**
+ * Equips a saved loadout on one character. A piece that is no longer available is skipped rather
+ * than refusing the rest. The subclass's abilities are put back only when the saved subclass is
+ * the one equipped, and only entries it offers, so the result is always one the game accepts.
+ * @return True when anything changed. `error` says why nothing did otherwise.
+ */
+bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t character, const SavedLoadout& loadout, LoadoutResult& result, std::string& error);
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t character, const std::array<bool, account::inventory::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error);
 bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& output, std::string& error);
 

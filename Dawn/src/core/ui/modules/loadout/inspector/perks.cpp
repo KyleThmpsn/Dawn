@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
+#include <optional>
 #include <cstdio>
 #include <imgui.h>
 #include <map>
@@ -26,21 +27,11 @@ constexpr const char* kExpandedScopeWarning = "May include perks this item does 
 constexpr const char* kUnrestrictedScopeWarning =
     "Every discovered perk; some combinations stop it loading.";
 
-constexpr float kPopupWidth = 520.0F;
-constexpr float kPopupHeight = 560.0F;
 constexpr float kCancelButtonWidth = 100.0F;
-/** Divider between two rows of the picker list, as the tooltip rules its own perk rows. */
-constexpr ImVec4 kListRule{1.0F, 1.0F, 1.0F, 0.10F};
 /** Height the results list leaves for the row of actions under it. */
 constexpr float kActionRowLines = 1.6F;
-/** The sheet's own frame: the tooltip's ground, a hairline, and the dim it lays on the page. */
-constexpr float kPickerPadding = 12.0F;
-constexpr float kPickerHairline = 1.0F;
-constexpr ImVec4 kPickerGround{0.09F, 0.09F, 0.10F, 0.98F};
-constexpr ImVec4 kPickerDim{0.0F, 0.0F, 0.0F, 0.55F};
-/** The item's name heads the sheet in its title cut, a little under the tooltip's band size. */
-constexpr float kPickerTitleScale = 1.3F;
-constexpr float kPickerTitleWeight = 1.0F;
+/** 160 bytes hold the sheet's muted line: the socket, and the name of the perk in it now. */
+constexpr std::size_t kSocketLineCapacity = 160;
 /** Width of the scope selector at the end of the filter row. */
 constexpr float kScopeWidth = 190.0F;
 /** The second filter row: type, rarity and order selectors, then the internal-plug toggle. */
@@ -55,11 +46,10 @@ constexpr const char* kDummyItemsLabel = "Dummy items";
 /** 64 bytes hold a plug type with its count. */
 constexpr std::size_t kTypePreviewCapacity = 64;
 
+/** Shown when a picked plug is not one the socket will take in the chosen scope. */
+constexpr const char* kPerkRefused = "That perk cannot go in this socket.";
 /** Title of the picker, used by both the open call and the modal. */
 constexpr const char* kPickerTitle = "Choose a perk";
-
-/** Corner radius of the fill a row shows under the pointer. */
-constexpr float kRowHoverRounding = 3.0F;
 
 /** The plugs the picker offers after its filters, and what each type would have shown. */
 struct Matches {
@@ -194,12 +184,12 @@ void draw_scope_row(const edit::CatalogItem& definition) noexcept {
  */
 [[nodiscard]] bool draw_perk_row(const edit::CatalogItem& plug,
                                  edit::Item& item,
+                                 const std::optional<std::uint32_t>& current,
                                  float width,
                                  float rowHeight) noexcept {
     Model& state = model();
     ImGui::PushID(static_cast<int>(plug.definition.definitionIndex));
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const auto& current = item.sockets.plugs[state.picker.lane];
     const bool chosen = current && *current == plug.definition.definitionHash;
     // The row is the tooltip's own perk row with the plug's type under its name, and the plug's
     // own tooltip under the pointer: the same plug reads the same in the list as it does fitted.
@@ -210,11 +200,11 @@ void draw_scope_row(const edit::CatalogItem& definition) noexcept {
             origin,
             {origin.x + width, origin.y + rowHeight},
             ImGui::GetColorU32(chosen ? ImGuiCol_Header : ImGuiCol_FrameBgHovered),
-            pixels(kRowHoverRounding));
+            pixels(controls::kRowRounding));
     }
     ImGui::GetWindowDrawList()->AddLine({origin.x, origin.y + rowHeight},
                                         {origin.x + width, origin.y + rowHeight},
-                                        ImGui::GetColorU32(kListRule));
+                                        ImGui::GetColorU32(tooltip::rule_color()));
     ImGui::SetCursorScreenPos(origin);
     tooltip::draw_perk_row(&plug, width, tooltip::PerkDetail::typed);
     if (hovered) {
@@ -230,6 +220,10 @@ void draw_scope_row(const edit::CatalogItem& definition) noexcept {
         if (applied) {
             state.status = "Perk applied.";
             record_edit(true);
+        } else {
+            // Nothing is closed and nothing changes, so without a word the click looked ignored.
+            state.status = kPerkRefused;
+            record_edit(false);
         }
     }
     ImGui::PopID();
@@ -285,7 +279,7 @@ void draw_perk_editor(const edit::CatalogItem& definition,
             draw->AddRectFilled(origin,
                                 {origin.x + width, origin.y + rowHeight},
                                 ImGui::GetColorU32(ImGuiCol_FrameBgHovered),
-                                pixels(kRowHoverRounding));
+                                pixels(controls::kRowRounding));
         }
         ImGui::SetCursorScreenPos(origin);
         tooltip::draw_perk_row(fitted, width, tooltip::PerkDetail::name);
@@ -306,22 +300,9 @@ void draw_perk_picker() noexcept {
         state.picker.requested = false;
         ImGui::OpenPopup(kPickerTitle);
     }
-    // The picker is a sheet on the tooltip's own ground: square, hairlined, and dimming the page
-    // behind it, as the game's socket picker lays over the inventory.
-    const float padding = pixels(kPickerPadding);
-    // The sheet opens centred and can then be dragged anywhere by its head.
-    ImGui::SetNextWindowSize({pixels(kPopupWidth), pixels(kPopupHeight)}, ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5F, 0.5F});
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{padding, padding});
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, pixels(kPickerHairline));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, kPickerGround);
-    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, kPickerDim);
-    const bool open = ImGui::BeginPopupModal(
-        kPickerTitle, nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
-    if (!open) {
+    // The picker is a sheet on the tooltip's own ground, as the game's socket picker lays over the
+    // inventory; the saved loadouts are drawn in the same one.
+    if (!tooltip::begin_sheet(kPickerTitle)) {
         return;
     }
     edit::Item* item = selected_item();
@@ -329,7 +310,7 @@ void draw_perk_picker() noexcept {
         item != nullptr ? state.catalog.find(item->definitionHash) : nullptr;
     if (definition == nullptr) {
         ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        tooltip::end_sheet();
         return;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -337,22 +318,21 @@ void draw_perk_picker() noexcept {
     }
 
     // The head names the item in its title cut and, under it, the socket and what is in it now.
-    const auto& current = item->sockets.plugs[state.picker.lane];
+    // A lane still on the definition's own default holds nothing in the instance, so what is in it
+    // is read from the resolved item, as the tooltip and the pane both read it. Read from the
+    // instance, such a lane was called empty and its perk was never marked as the one fitted.
+    edit::Item resolved = *item;
+    const std::optional<std::uint32_t> current =
+        edit::materialize(resolved, state.catalog) ? resolved.sockets.plugs[state.picker.lane]
+                                                   : item->sockets.plugs[state.picker.lane];
     const edit::CatalogItem* fitted = current ? state.catalog.find(*current) : nullptr;
-    const float titleSize = ImGui::GetStyle().FontSizeBase * kPickerTitleScale;
-    const float titleWeight = art::push_title(titleSize, pixels(kPickerTitleWeight));
-    const ImVec2 titleAt = ImGui::GetCursorScreenPos();
-    art::clipped_text(art::shout(definition->name),
-                      titleAt,
-                      ImGui::GetContentRegionAvail().x,
-                      ImGui::GetColorU32(ImGuiCol_Text),
-                      titleWeight);
-    ImGui::Dummy({0.0F, ImGui::GetTextLineHeight()});
-    ImGui::PopFont();
-    ImGui::TextColored(tooltip::muted(),
-                       "Socket %zu  /  %s",
-                       state.picker.lane + 1,
-                       fitted != nullptr ? fitted->name.c_str() : "Empty");
+    char socket[kSocketLineCapacity]{};
+    (void)std::snprintf(socket,
+                        sizeof socket,
+                        "Socket %zu  /  %s",
+                        state.picker.lane + 1,
+                        fitted != nullptr ? fitted->name.c_str() : "Empty");
+    tooltip::draw_sheet_head(definition->name, socket);
     controls::space(controls::kSectionSpacing);
 
     // Search leads the filter row; the scope sits at its end, with its warning under both.
@@ -388,7 +368,8 @@ void draw_perk_picker() noexcept {
         clip.Begin(static_cast<int>(options.size()), pitch);
         while (clip.Step()) {
             for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
-                applied |= draw_perk_row(*options[static_cast<std::size_t>(i)], *item, width, rowHeight);
+                applied |= draw_perk_row(
+                    *options[static_cast<std::size_t>(i)], *item, current, width, rowHeight);
             }
         }
         if (options.empty()) {
@@ -403,7 +384,7 @@ void draw_perk_picker() noexcept {
     if (applied || ImGui::Button("Cancel", {cancelWidth, 0.0F})) {
         ImGui::CloseCurrentPopup();
     }
-    ImGui::EndPopup();
+    tooltip::end_sheet();
 }
 
 } // namespace dawn::core::ui::modules::loadout::internal

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <imgui.h>
 
 #include "../../scaling/dpi/ui_dpi_scaling.h"
@@ -30,6 +31,8 @@ constexpr float kControlPaddingY = 1.0F;
 constexpr float kControlTextScale = 0.88F;
 /** Id of the card's context menu. */
 constexpr const char* kMenuId = "card_menu";
+/** 32 bytes hold a character's name in a menu: a class name and a one-digit slot. */
+constexpr std::size_t kCharacterLabelCapacity = 32;
 /** Set between the item's type and the word after it on the band's second line. */
 constexpr const char* kDetailSeparator = "  |  ";
 /**
@@ -284,7 +287,9 @@ void draw_controls(const edit::CatalogItem& definition,
         ImGui::SameLine(0.0F, 0.0F);
     }
 
-    const char* title = action == Action::equip ? "Equip" : "Swap";
+    const char* title = action == Action::equip  ? "Equip"
+                        : action == Action::pull ? "Pull"
+                                                 : "Swap";
     const float button = ImGui::CalcTextSize(title).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
     // The action is pinned to the right edge of the card, with the lock beside it, which keeps
     // every row reading alike however wide the grid drew them. Screen space, so nothing is
@@ -304,9 +309,39 @@ void draw_controls(const edit::CatalogItem& definition,
     if (action == Action::equip) {
         internal::record_edit(edit::equip(
             *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
+    } else if (action == Action::pull) {
+        internal::record_edit(edit::pull_from_postmaster(
+            *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
     } else {
         browse_for_slot(slot);
     }
+}
+
+/**
+ * Offers the other characters one stowed item can be sent to. A character whose class cannot hold
+ * the item is listed but disabled, so the menu still says where it could not go.
+ */
+void draw_send_menu(const edit::CatalogItem& definition, const edit::Item& item) noexcept {
+    const internal::Model& state = internal::model();
+    const state::AccountState& account = state.draft->after;
+    if (account.characterCount < 2 || !ImGui::BeginMenu("Send to")) {
+        return;
+    }
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (index == state.character) {
+            continue;
+        }
+        const state::CharacterState& other = account.characters[index];
+        char label[kCharacterLabelCapacity]{};
+        (void)std::snprintf(
+            label, sizeof label, "%s %zu", art::class_name(other.characterClass), index + 1);
+        ImGui::PushID(static_cast<int>(index));
+        if (ImGui::MenuItem(label, nullptr, false, edit::fits_class(definition, other.characterClass))) {
+            (void)internal::send_item(item.instanceSoid, index);
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndMenu();
 }
 
 /**
@@ -335,16 +370,27 @@ void draw_menu(const edit::CatalogItem& definition,
         if (ImGui::Selectable("Swap")) {
             browse_for_slot(slot);
         }
-    } else if (ImGui::Selectable("Equip")) {
-        internal::record_edit(edit::equip(
-            *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
+    } else if (action == Action::pull) {
+        // A postmaster item cannot be equipped, so the menu offers the pull in its place.
+        if (ImGui::Selectable("Pull from postmaster")) {
+            internal::record_edit(edit::pull_from_postmaster(
+                *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
+        }
+    } else {
+        if (ImGui::Selectable("Equip")) {
+            internal::record_edit(edit::equip(
+                *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
+        }
+        draw_send_menu(definition, item);
     }
     if (ImGui::Selectable(locked ? kUnlockLabel : kLockLabel)) {
         item.flags = locked ? item.flags & ~inv::kLockedItemFlag : item.flags | inv::kLockedItemFlag;
         internal::mark_changed();
     }
-    if (!equipped && !locked && ImGui::Selectable("Remove")) {
-        (void)internal::erase_owned_item(item.instanceSoid);
+    // Removal asks first, as the pane's own removal does. With live apply on, an edit reaches the
+    // game the moment it is made, so a menu row that deleted at once left nothing to catch a slip.
+    if (!equipped && !locked && ImGui::Selectable("Remove...")) {
+        internal::request_removal(item.instanceSoid);
     }
     ImGui::EndPopup();
 }

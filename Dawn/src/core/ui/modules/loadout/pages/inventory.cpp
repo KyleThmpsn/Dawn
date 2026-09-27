@@ -277,7 +277,9 @@ void draw_character_items() noexcept {
             card::draw(item,
                        equipped ? "Equipped" : nullptr,
                        definition != nullptr ? definition->slot : kSlotCount,
-                       equipped ? card::Action::swap : card::Action::equip,
+                       equipped         ? card::Action::swap
+                       : item->postmaster ? card::Action::pull
+                                          : card::Action::equip,
                        width,
                        rowHeight);
         }

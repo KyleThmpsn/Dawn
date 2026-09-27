@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
 #include <cfloat>
+#include <cstdio>
 #include <imgui.h>
 
 #include "../../../scaling/dpi/ui_dpi_scaling.h"
+#include "../art.h"
 #include "../internal.h"
 #include "../controls.h"
 #include "../tooltip.h"
@@ -20,9 +22,20 @@ constexpr float kSecondaryActionHeight = 28.0F;
 constexpr float kGrantFieldWidth = 90.0F;
 /** Title of the item removal, used for both the action and its modal. */
 constexpr const char* kRemoveItemTitle = "Remove item?";
+/** Width of each of the removal confirmation's two buttons, so the pair reads as one row. */
+constexpr float kConfirmButtonWidth = 92.0F;
 /** The pane's own controls, which say what they do rather than showing a glyph. */
 constexpr const char* kCloseLabel = "Close";
 constexpr const char* kUnequipLabel = "Unequip";
+constexpr const char* kPullLabel = "Pull";
+constexpr const char* kSendLabel = "Send to";
+/** 32 bytes hold a character's name on a button: a class name and a one-digit slot. */
+constexpr std::size_t kCharacterLabelCapacity = 32;
+/** Where the item the pane shows is kept, in the header's words. */
+constexpr const char* kEquippedLabel = "Equipped";
+constexpr const char* kPostmasterLabel = "Postmaster";
+constexpr const char* kInInventoryLabel = "In inventory";
+constexpr const char* kNotOwnedLabel = "Not owned";
 
 /** Where the selected item sits on the character, if it is equipped at all. */
 struct Placement {
@@ -41,6 +54,59 @@ struct Placement {
     return {};
 }
 
+/**
+ * @return Where the character already keeps a copy of one catalog item, in the header's words, or
+ * "Not owned" when it keeps none.
+ * A pane bound to a catalog entry still offers to add another copy, so it stays bound to the entry;
+ * this only lets its header say truthfully whether there is one already. Without it the header read
+ * "Not owned" beside an item just added to the inventory, and beside any the character already had.
+ * @param hash Definition hash of the catalog item.
+ */
+[[nodiscard]] const char* holding_of(std::uint32_t hash) noexcept {
+    const state::CharacterState& owner = character();
+    for (const auto& slot : owner.equipment.slots) {
+        if (slot && slot->definitionHash == hash) {
+            return kEquippedLabel;
+        }
+    }
+    bool postmaster = false;
+    for (std::size_t i = 0; i < owner.inventory.count; ++i) {
+        const edit::Item& stowed = owner.inventory.values[i];
+        if (stowed.definitionHash != hash) {
+            continue;
+        }
+        if (!stowed.postmaster) {
+            return kInInventoryLabel;
+        }
+        postmaster = true;
+    }
+    if (postmaster) {
+        return kPostmasterLabel;
+    }
+    // An account stack, such as a material or a shader, is kept by the profile rather than the
+    // character, and the page that lists them is its inventory as much as the character's is.
+    const state::AccountState& account = model().draft->after;
+    for (std::size_t i = 0; i < account.profileItemCount; ++i) {
+        if (account.profileItems[i].definitionHash == hash) {
+            return kInInventoryLabel;
+        }
+    }
+    return kNotOwnedLabel;
+}
+
+/**
+ * @return True when the field just drawn was left with Enter, which submits the grant.
+ * The number fields apply what is typed as it is typed. Dear ImGui does not support asking a number
+ * field to report Enter instead: it asserts in a debug build, and in a release build the field
+ * applied a typed value only when Enter was the way out of it, so a click on an action granted the
+ * value from before the edit.
+ */
+[[nodiscard]] bool left_with_enter() noexcept {
+    return ImGui::IsItemDeactivated()
+           && (ImGui::IsKeyPressed(ImGuiKey_Enter, false)
+               || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+}
+
 /** @return True when the catalog item is a stack rather than a single instance. */
 [[nodiscard]] bool stackable(const edit::CatalogItem& definition) noexcept {
     using state::build_data::items::details::InstancedDefinitionState;
@@ -56,15 +122,23 @@ void draw_pane_header(const edit::Item* owned) noexcept {
     Model& state = model();
     const Placement placement = owned != nullptr ? placement_of(owned->instanceSoid) : Placement{};
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled(owned == nullptr        ? "Not owned"
-                        : placement.equipped    ? "Equipped"
-                        : owned->postmaster     ? "Postmaster"
-                                                : "In inventory");
+    ImGui::TextDisabled("%s",
+                        owned == nullptr     ? holding_of(state.selection.definitionHash)
+                        : placement.equipped ? kEquippedLabel
+                        : owned->postmaster  ? kPostmasterLabel
+                                             : kInInventoryLabel);
     if (placement.equipped) {
         ImGui::SameLine();
         if (ImGui::SmallButton(kUnequipLabel)) {
             record_edit(edit::unequip(
                 *state.draft, state.catalog, state.character, placement.slot, state.status));
+        }
+    } else if (owned != nullptr && owned->postmaster) {
+        // A postmaster item cannot be equipped until it is pulled into its own bucket.
+        ImGui::SameLine();
+        if (ImGui::SmallButton(kPullLabel)) {
+            record_edit(edit::pull_from_postmaster(
+                *state.draft, state.catalog, state.character, owned->instanceSoid, state.status));
         }
     }
     const float closeWidth =
@@ -97,17 +171,15 @@ void draw_grant(const edit::CatalogItem& definition) noexcept {
     if (powered) {
         controls::field_label("Power", column);
         ImGui::SetNextItemWidth(pixels(kGrantFieldWidth));
-        if (ImGui::InputInt("##power", &state.grant.power, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            add = true;
-        }
+        (void)ImGui::InputInt("##power", &state.grant.power, 0, 0);
+        add |= left_with_enter();
         state.grant.power = std::clamp(state.grant.power, 0, kPowerSliderMaximum);
     }
     if (stacked) {
         controls::field_label("Quantity", column);
         ImGui::SetNextItemWidth(pixels(kGrantFieldWidth));
-        if (ImGui::InputInt("##quantity", &state.grant.quantity, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue)) {
-            add = true;
-        }
+        (void)ImGui::InputInt("##quantity", &state.grant.quantity, 0, 0);
+        add |= left_with_enter();
         state.grant.quantity =
             std::clamp(state.grant.quantity, 1, (std::max)(1, definition.detail.maxStackSize));
     }
@@ -148,21 +220,8 @@ void draw_grant(const edit::CatalogItem& definition) noexcept {
 /** Draws the removal action, which only an unequipped, unlocked item offers. */
 void draw_remove_action() noexcept {
     if (ImGui::Button("Remove from inventory", {-FLT_MIN, pixels(kSecondaryActionHeight)})) {
-        ImGui::OpenPopup(kRemoveItemTitle);
+        request_removal(model().selection.instanceSoid);
     }
-    if (!ImGui::BeginPopupModal(kRemoveItemTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        return;
-    }
-    ImGui::TextUnformatted("Remove this item from the inventory?");
-    if (ImGui::Button("Remove")) {
-        (void)erase_owned_item(model().selection.instanceSoid);
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
 }
 
 /** @return How many sockets one owned item resolves to, or zero when it has none. */
@@ -208,6 +267,49 @@ void draw_item_frame(const edit::CatalogItem& definition,
     tooltip::end_frame();
 }
 
+/**
+ * Draws the row that sends a stowed item to another character, with a button for each. A
+ * character whose class cannot hold the item keeps its button, disabled, so the row says why.
+ * @return True when the item was sent, which takes it off this character: the caller must not
+ * read the item again.
+ */
+[[nodiscard]] bool draw_send_row(const edit::CatalogItem& definition, const edit::Item& item) noexcept {
+    const Model& state = model();
+    const state::AccountState& account = state.draft->after;
+    if (account.characterCount < 2) {
+        return false;
+    }
+    controls::space(controls::kSectionSpacing);
+    controls::field_label(kSendLabel, ImGui::CalcTextSize(kSendLabel).x);
+    bool first = true;
+    for (std::size_t index = 0; index < account.characterCount; ++index) {
+        if (index == state.character) {
+            continue;
+        }
+        if (!first) {
+            ImGui::SameLine();
+        }
+        first = false;
+        const state::CharacterState& other = account.characters[index];
+        char label[kCharacterLabelCapacity]{};
+        (void)std::snprintf(
+            label, sizeof label, "%s %zu", art::class_name(other.characterClass), index + 1);
+        const bool fits = edit::fits_class(definition, other.characterClass);
+        ImGui::PushID(static_cast<int>(index));
+        ImGui::BeginDisabled(!fits);
+        const bool pressed = ImGui::SmallButton(label);
+        ImGui::EndDisabled();
+        if (!fits && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("This item belongs to another class.");
+        }
+        ImGui::PopID();
+        if (pressed && send_item(item.instanceSoid, index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /** Draws what the pane offers under the item frame for an item the character owns. */
 void draw_owned_actions(const edit::CatalogItem& definition, edit::Item& item) noexcept {
     if (stackable(definition)) {
@@ -222,13 +324,61 @@ void draw_owned_actions(const edit::CatalogItem& definition, edit::Item& item) n
         }
         record_scalar_edit(quantityChanged);
     }
-    if (!placement_of(item.instanceSoid).equipped && (item.flags & inv::kLockedItemFlag) == 0) {
+    const bool stowed = !placement_of(item.instanceSoid).equipped;
+    // A postmaster item is pulled before it goes anywhere, as in game.
+    if (stowed && !item.postmaster && draw_send_row(definition, item)) {
+        return;
+    }
+    if (stowed && (item.flags & inv::kLockedItemFlag) == 0) {
         controls::space(controls::kSectionSpacing);
         draw_remove_action();
     }
 }
 
 } // namespace
+
+void request_removal(std::uint64_t instance) noexcept {
+    Model& state = model();
+    state.removal = instance;
+    // The confirmation is opened from the page, as the perk picker is, so the card or the pane
+    // that asked can scroll away or close without taking the question with it.
+    state.removalRequested = true;
+}
+
+void draw_removal_confirm() noexcept {
+    Model& state = model();
+    if (state.removalRequested) {
+        state.removalRequested = false;
+        ImGui::OpenPopup(kRemoveItemTitle);
+    }
+    if (!ImGui::BeginPopupModal(kRemoveItemTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+    const edit::Item* item = find_owned_item(state.removal);
+    if (item == nullptr) {
+        // The item went while the question was open, to another edit or the account reloading.
+        state.removal = 0;
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const edit::CatalogItem* definition = state.catalog.find(item->definitionHash);
+    ImGui::TextUnformatted(definition != nullptr ? definition->name.c_str() : "This item");
+    ImGui::TextDisabled("This removes it from the character's inventory.");
+    controls::space(controls::kRowSpacing);
+    if (controls::primary_button("Remove", {pixels(kConfirmButtonWidth), 0.0F})) {
+        (void)erase_owned_item(state.removal);
+        state.removal = 0;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", {pixels(kConfirmButtonWidth), 0.0F})
+        || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        state.removal = 0;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
 
 void draw_inspector() noexcept {
     Model& state = model();

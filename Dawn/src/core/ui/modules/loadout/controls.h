@@ -20,6 +20,8 @@ inline constexpr float kRowSpacing = 4.0F;
 inline constexpr float kSectionSpacing = 6.0F;
 /** Corner radius of every card-like surface: item cards, result rows, stack rows and banners. */
 inline constexpr float kCardRounding = 5.0F;
+/** Corner radius of the fill a list row shows under the pointer, tighter than a card's. */
+inline constexpr float kRowRounding = 3.0F;
 /**
  * Gap between a field label column and the control beside it. Sundial uses 18.
  * `field_label` advances the cursor by exactly this, so a caller sizing a control from its group

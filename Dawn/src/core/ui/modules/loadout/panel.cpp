@@ -73,6 +73,8 @@ constexpr float kPercentScale = 100.0F;
 constexpr const char* kDiscardTitle = "Discard edits?";
 /** Color of the unapplied-edits marker and of the divergence banner. */
 constexpr ImVec4 kPendingColor{0.88F, 0.76F, 0.47F, 1.0F};
+/** Color of an outcome the game or the editor refused, set apart from an ordinary result. */
+constexpr ImVec4 kRefusedColor{0.94F, 0.48F, 0.42F, 1.0F};
 /** 32 bytes hold the longest character tab label: a class name and a one-digit slot. */
 constexpr std::size_t kCharacterLabelCapacity = 32;
 
@@ -216,6 +218,24 @@ void draw_action_bar() noexcept {
         ImGui::TextColored(kPendingColor, "Unsaved changes");
     } else {
         ImGui::Dummy({0.0F, ImGui::GetFrameHeight()});
+    }
+    // What the last edit or apply came to. Without it a refused edit was indistinguishable from one
+    // still waiting to go: both left only "Unsaved changes" with nothing to say why. A refusal is
+    // set in its own colour, and the whole message is under the pointer when the row clips it.
+    if (!state.status.empty()) {
+        ImGui::SameLine();
+        const float room = (std::max)(
+            0.0F, right - actionsWidth - toggleWidth - style.ItemSpacing.x - ImGui::GetCursorPosX());
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        art::clipped_text(state.status,
+                          {at.x, at.y + style.FramePadding.y},
+                          room,
+                          state.statusFailed ? ImGui::GetColorU32(kRefusedColor)
+                                             : ImGui::GetColorU32(ImGuiCol_TextDisabled));
+        ImGui::Dummy({room, ImGui::GetFrameHeight()});
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", state.status.c_str());
+        }
     }
 
     ImGui::SameLine((std::max)(ImGui::GetCursorPosX(), right - actionsWidth - toggleWidth));
@@ -497,8 +517,9 @@ void draw_page() noexcept {
     const float bodyHeight =
         (std::max)(ImGui::GetFrameHeight(), ImGui::GetContentRegionAvail().y - barHeight);
     draw_workspace(bodyHeight);
-    // The picker modal belongs to the page window, the one scope every card can reach.
+    // The modals belong to the page window, the one scope every card and the pane can reach.
     draw_perk_picker();
+    draw_removal_confirm();
     draw_action_bar();
 }
 

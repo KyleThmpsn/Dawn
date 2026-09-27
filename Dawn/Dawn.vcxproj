@@ -135,6 +135,8 @@
     <ClCompile Include="src\core\ui\modules\loadout\inspector\perks.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
     <ClCompile Include="src\core\ui\modules\loadout\inspector\stats.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
     <ClCompile Include="src\core\ui\modules\loadout\preview.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
+    <ClCompile Include="src\core\ui\modules\loadout\presets.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
+    <ClCompile Include="src\core\ui\modules\loadout\pages\loadouts.cpp"><ExceptionHandling>Sync</ExceptionHandling></ClCompile>
     <ClCompile Include="src\client\hooks\bootflow\native_cleanup_owner_guard.cpp"><ObjectFileName>$(IntDir)native_cleanup_owner_guard_cpp.obj</ObjectFileName></ClCompile>
     <ClCompile Include="src\client\hooks\bootflow\native_property_list_guard.cpp" />
     <ClCompile Include="src\client\hooks\bootflow\local_reconnect.cpp" />

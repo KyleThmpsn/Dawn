@@ -11,6 +11,13 @@
 namespace dawn::state::editor {
 namespace inv = account::inventory;
 namespace {
+/** The subclass's own equipment slot, which its abilities belong to. */
+constexpr std::size_t kSubclassSlot = 11;
+/** The character's ability entries, in the order the catalog lists a subclass's ability lanes. */
+constexpr std::array<std::uint8_t CharacterState::*, 5> kAbilityFields{
+    &CharacterState::movementAbilityEntry, &CharacterState::grenadeAbilityEntry, &CharacterState::superAbilityEntry,
+    &CharacterState::meleeAbilityEntry, &CharacterState::classAbilityEntry};
+static_assert(kAbilityFields.size() == std::tuple_size_v<decltype(CatalogItem::abilities)>, "Every catalog ability lane needs its character field.");
 Stats contribution(const CatalogItem& item, const Catalog& catalog) {
     Stats result{};
     // The detail catalog does not bound this count, and a cache record carries whatever it was
@@ -304,6 +311,111 @@ bool unequip(Draft& draft, const Catalog&, std::size_t character, std::size_t sl
     if (!bump(target, item)) { error = "Item revision limit reached."; return false; }
     target.inventory.values[target.inventory.count++] = item; target.equipment.slots[slot].reset(); draft.dirty = true;
     error = "Moved to inventory in draft."; return true;
+}
+bool pull_from_postmaster(Draft& draft, const Catalog& catalog, std::size_t characterIndex, std::uint64_t id, std::string& error) {
+    if (characterIndex >= draft.after.characterCount) return false;
+    auto& character = draft.after.characters[characterIndex];
+    for (std::size_t i = 0; i < character.inventory.count; ++i) {
+        auto& item = character.inventory.values[i];
+        if (item.instanceSoid != id) continue;
+        if (!item.postmaster) { error = "This item is not at the postmaster."; return false; }
+        const auto* definition = catalog.find(item.definitionHash);
+        build_data::inventory::buckets::Descriptor bucket{};
+        if (!definition || !build_data::find_inventory_bucket_descriptor(definition->definition.bucketId, bucket)) { error = "This item is missing from the installed build."; return false; }
+        if (bucket.arraySelector != build_data::inventory::buckets::ArraySelector::character) { error = "This is an account item. Collect it from the postmaster in game."; return false; }
+        // A postmaster row counts against the postmaster, so its own bucket is measured without it.
+        if (!inv::has_room(character, definition->definition.bucketId)) { error = "Its inventory slot is full. Free a space before pulling it."; return false; }
+        auto pulled = item; pulled.postmaster = false;
+        if (!bump(character, pulled)) { error = "Item revision limit reached."; return false; }
+        item = pulled; draft.dirty = true; error = "Pulled from the postmaster."; return true;
+    }
+    error = "This item is no longer on this character."; return false;
+}
+bool transfer(Draft& draft, const Catalog& catalog, std::size_t from, std::size_t to, std::uint64_t id, std::string& error) {
+    if (from >= draft.after.characterCount || to >= draft.after.characterCount || from == to) return false;
+    auto staged = std::make_unique<AccountState>(draft.after);
+    auto& source = staged->characters[from];
+    auto& target = staged->characters[to];
+    for (std::size_t i = 0; i < source.inventory.count; ++i) {
+        const auto item = source.inventory.values[i];
+        if (item.instanceSoid != id) continue;
+        if (item.postmaster) { error = "Pull it from the postmaster before sending it."; return false; }
+        const auto* definition = catalog.find(item.definitionHash);
+        if (!definition) { error = "This item is missing from the installed build."; return false; }
+        if (!fits_class(*definition, target.characterClass)) { error = "That character's class cannot hold this item."; return false; }
+        if (target.inventory.count >= target.inventory.values.size() || !inv::has_room(target, definition->definition.bucketId)) { error = "That character has no room for it. Free a space there first."; return false; }
+        auto moved = item;
+        // The receiving character's counter runs on its own and can be behind the item's revision,
+        // which would move the item backwards. It is lifted past it first, so the item's own
+        // revision only ever rises, as it does for every other edit.
+        const auto previous = static_cast<std::uint32_t>(item.mutationSerial);
+        if (target.nextInventorySerial <= previous) target.nextInventorySerial = previous + 1U;
+        if (!bump(target, moved)) { error = "Item revision limit reached."; return false; }
+        inv::erase(source, i);
+        target.inventory.values[target.inventory.count++] = moved;
+        draft.after = *staged; draft.dirty = true; error = "Sent to the other character."; return true;
+    }
+    error = "Only a stowed item can be sent. Unequip it first."; return false;
+}
+PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept {
+    if (piece.instance == 0) return PieceState::empty;
+    // A definition the installed build no longer carries, as a removed package leaves behind, has
+    // nothing left to equip it as.
+    if (!catalog.find(piece.definition)) return PieceState::unavailable;
+    for (const auto& slot : character.equipment.slots)
+        if (slot && slot->instanceSoid == piece.instance) return slot->definitionHash == piece.definition ? PieceState::equipped : PieceState::unavailable;
+    for (std::size_t i = 0; i < character.inventory.count; ++i) {
+        const auto& stowed = character.inventory.values[i];
+        if (stowed.instanceSoid != piece.instance) continue;
+        // An instance id only names one item within one account, so the item it names now has to
+        // be the one saved: after a reset the same id can belong to something else entirely.
+        return stowed.definitionHash == piece.definition && !stowed.postmaster ? PieceState::stowed : PieceState::unavailable;
+    }
+    return PieceState::unavailable;
+}
+SavedLoadout capture_loadout(const CharacterState& character, std::string name) {
+    SavedLoadout loadout; loadout.character = character.soid; loadout.name = std::move(name);
+    for (std::size_t slot = 0; slot < loadout.pieces.size(); ++slot)
+        if (const auto& item = character.equipment.slots[slot]) loadout.pieces[slot] = {item->instanceSoid, item->definitionHash};
+    for (std::size_t lane = 0; lane < kAbilityFields.size(); ++lane) loadout.abilities[lane] = character.*kAbilityFields[lane];
+    return loadout;
+}
+bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const SavedLoadout& loadout, LoadoutResult& result, std::string& error) {
+    result = {};
+    if (characterIndex >= draft.after.characterCount) return false;
+    auto staged = std::make_unique<CharacterState>(draft.after.characters[characterIndex]);
+    std::vector<std::uint64_t> plain, exotic;
+    for (const auto& piece : loadout.pieces) {
+        const PieceState standing = piece_state(*staged, catalog, piece);
+        if (standing == PieceState::empty) continue;
+        ++result.saved;
+        if (standing == PieceState::unavailable) { ++result.unavailable; continue; }
+        if (standing == PieceState::equipped) { ++result.equipped; continue; }
+        const CatalogItem* definition = catalog.find(piece.definition);
+        (definition->definition.tier == static_cast<std::uint8_t>(build_data::items::Tier::exotic) ? exotic : plain).push_back(piece.instance);
+    }
+    // Plain pieces go on first. One can only lower the exotic count, so by the time an exotic goes
+    // on, the exotic it would have clashed with has already been replaced.
+    bool changed = false;
+    for (const auto* group : {&plain, &exotic}) for (const std::uint64_t id : *group) {
+        std::string refused;
+        if (equip_character(*staged, catalog, id, refused)) { ++result.equipped; changed = true; } else ++result.unavailable;
+    }
+    // The abilities belong to the subclass: they are put back only when the saved subclass is the
+    // one on now, and only an entry that subclass offers for its lane, or the apply would refuse.
+    const SavedPiece& savedSubclass = loadout.pieces[kSubclassSlot];
+    const auto& subclassSlot = staged->equipment.slots[kSubclassSlot];
+    const CatalogItem* subclass = savedSubclass.instance != 0 && subclassSlot && subclassSlot->instanceSoid == savedSubclass.instance
+        ? catalog.find(subclassSlot->definitionHash) : nullptr;
+    for (std::size_t lane = 0; subclass && lane < kAbilityFields.size(); ++lane) {
+        for (const auto& choice : subclass->abilities[lane]) {
+            if (choice.entry != loadout.abilities[lane]) continue;
+            if (staged.get()->*kAbilityFields[lane] != choice.entry) { staged.get()->*kAbilityFields[lane] = choice.entry; changed = true; }
+            break;
+        }
+    }
+    if (!changed) { error = result.equipped != 0 ? "This loadout is already equipped." : "None of this loadout's pieces are available."; return false; }
+    draft.after.characters[characterIndex] = *staged; draft.dirty = true; error = "Loadout equipped in draft."; return true;
 }
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t characterIndex, const std::array<bool, inv::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error) {
     if (power < 0 || power > kMaximumItemLevel) { error = "Item level must be between 0 and 106."; return false; }

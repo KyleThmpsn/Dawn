@@ -179,7 +179,9 @@ void draw_armor_totals() noexcept {
 
 void draw_character_fields() noexcept {
     state::CharacterState& value = character();
-    const float available = ImGui::GetContentRegionAvail().x;
+    // The groups wrap inside the width the side workspace leaves uncovered. The workspace lies over
+    // the page rather than beside it, so measured to the page edge the last group sat under it.
+    const float available = (std::max)(0.0F, ImGui::GetContentRegionAvail().x - overlay_width());
     const float gap = pixels(kGroupColumnGap);
     // The field rows run shorter than the rest of the page; a combo here is a label, not a target.
     // The fields stack with only a sliver between them, so a group reads as one block.

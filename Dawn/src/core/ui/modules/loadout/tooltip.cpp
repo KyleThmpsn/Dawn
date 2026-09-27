@@ -151,6 +151,16 @@ constexpr ImVec4 kBadgeFill{1.0F, 1.0F, 1.0F, 0.12F};
 constexpr ImVec4 kBarTrack{1.0F, 1.0F, 1.0F, 0.14F};
 constexpr ImVec4 kBarFill{0.93F, 0.93F, 0.93F, 1.0F};
 constexpr ImVec4 kRuleColor{1.0F, 1.0F, 1.0F, 0.10F};
+/** A sheet's own frame: the tooltip's ground, a hairline, and the dim it lays over the page. */
+constexpr float kSheetPadding = 12.0F;
+constexpr float kSheetWidth = 520.0F;
+constexpr float kSheetHeight = 560.0F;
+constexpr float kSheetHairline = 1.0F;
+constexpr ImVec4 kSheetGround{0.09F, 0.09F, 0.10F, 0.98F};
+constexpr ImVec4 kSheetDim{0.0F, 0.0F, 0.0F, 0.55F};
+/** A sheet is headed by its title in the title cut, a little under the tooltip's band size. */
+constexpr float kSheetTitleScale = 1.3F;
+constexpr float kSheetTitleWeight = 1.0F;
 /** The rule beside the power figure, which the game draws fainter than the type around it. */
 constexpr ImVec4 kPowerRuleColor{1.0F, 1.0F, 1.0F, 0.30F};
 constexpr ImVec4 kMuted{1.0F, 1.0F, 1.0F, 0.55F};
@@ -955,7 +965,9 @@ void draw_stats(const std::vector<StatRow>& rows,
     for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane) {
         const auto& current = resolved.sockets.plugs[lane];
         const edit::CatalogItem* plug = current ? catalog.find(*current) : nullptr;
-        if (plug == nullptr || plug->name.empty() || plug->name.rfind("Unnamed", 0) == 0
+        // An unnamed plug is left off by its flag, as the pane leaves it off, not by its label: a
+        // plug the catalog labels from its own stats, as an armor stat plug is, is still unnamed.
+        if (plug == nullptr || plug->name.empty() || plug->unnamed
             || plug->name.rfind("Empty ", 0) == 0 || plug->name.rfind("Default ", 0) == 0) {
             continue;
         }
@@ -1023,6 +1035,44 @@ ImVec4 muted() noexcept {
 
 ImVec4 pending() noexcept {
     return kPending;
+}
+
+ImVec4 rule_color() noexcept {
+    return kRuleColor;
+}
+
+bool begin_sheet(const char* id) noexcept {
+    const float pad = pixels(kSheetPadding);
+    ImGui::SetNextWindowSize({pixels(kSheetWidth), pixels(kSheetHeight)}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {0.5F, 0.5F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{pad, pad});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, pixels(kSheetHairline));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, kSheetGround);
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, kSheetDim);
+    // The frame is read when the window begins, so the styles go straight back afterwards.
+    const bool open = ImGui::BeginPopupModal(
+        id, nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+    return open;
+}
+
+void end_sheet() noexcept {
+    ImGui::EndPopup();
+}
+
+void draw_sheet_head(const std::string& title, const char* detail) noexcept {
+    const float size = ImGui::GetStyle().FontSizeBase * kSheetTitleScale;
+    const float weight = art::push_title(size, pixels(kSheetTitleWeight));
+    art::clipped_text(art::shout(title),
+                      ImGui::GetCursorScreenPos(),
+                      ImGui::GetContentRegionAvail().x,
+                      ImGui::GetColorU32(ImGuiCol_Text),
+                      weight);
+    ImGui::Dummy({0.0F, ImGui::GetTextLineHeight()});
+    ImGui::PopFont();
+    ImGui::TextColored(kMuted, "%s", detail);
 }
 
 void draw_rule() noexcept {
