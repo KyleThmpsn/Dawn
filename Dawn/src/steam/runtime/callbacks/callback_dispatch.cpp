@@ -1,5 +1,9 @@
 #include <Windows.h>
 
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "../../../client/content/investment/worker.h"
@@ -90,13 +94,36 @@ void dispatch_event(CallbackEvent& event) noexcept {
     }
 }
 
+/** Code of a fault that unwound out of the slice, reported by the next call. Zero means none. */
+std::atomic<std::uint32_t> g_faultCode{0};
+
+/**
+ * Writes the fault line one call after the fault. Logging from the handler could take the log
+ * lock the faulting slice still holds, so the report waits until that stack is gone.
+ */
+void report_fault_once() noexcept {
+    const std::uint32_t code = g_faultCode.exchange(0, std::memory_order_relaxed);
+    if (code == 0) {
+        return;
+    }
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written = std::snprintf(
+        line.data(), line.size(), "ev=core stage=pump result=fault code=0x%08X", code);
+    if (written > 0) {
+        core::log::write(core::log::Channel::server,
+                         core::log::Level::error,
+                         {line.data(), static_cast<std::size_t>(written)});
+    }
+}
+
 } // namespace
 } // namespace dawn::steam::runtime::callbacks
 
 namespace dawn::steam {
+namespace {
 
-/** Delivers one batch of queued callbacks on the caller thread. The batch has a size cap. */
-void run_callbacks() noexcept {
+/** Runs one whole slice. Separated so the caller can wrap it in a structured handler. */
+void run_slice() noexcept {
     // Presentation goes in first, so the sweep below has an overlay to draw with. It only hooks
     // Present; the game still decides when a frame is drawn.
     runtime::activate_graphics_once();
@@ -124,6 +151,23 @@ void run_callbacks() noexcept {
         const auto now = GetTickCount64();
         server::service(now);
         client::content::investment::worker::service(now);
+    }
+}
+
+} // namespace
+
+/**
+ * Delivers one capped batch of queued callbacks on the caller thread. The game holds an unguarded
+ * re-entrancy latch across this call, so a fault unwinding out of here kills every later tick,
+ * and with it the server, which is serviced from inside the slice.
+ */
+void run_callbacks() noexcept {
+    runtime::callbacks::report_fault_once();
+    __try {
+        run_slice();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        runtime::callbacks::g_faultCode.store(static_cast<std::uint32_t>(GetExceptionCode()),
+                                              std::memory_order_relaxed);
     }
 }
 
