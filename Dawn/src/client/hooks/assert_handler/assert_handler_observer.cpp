@@ -11,6 +11,7 @@
 
 #include "../../../core/logging/log.h"
 #include "../network/lifecycle/sensor_state_heap_diagnostic.h"
+#include "../probes/stall_trace/stall_trace.h"
 #include "../../targets/game/assert_handler.h"
 
 namespace dawn::client::hooks::assert_handler {
@@ -149,6 +150,7 @@ void report(int code, const char* text) noexcept {
     if (repeats == 1U) {
         report_stack(seen);
     }
+    probes::stall_trace::observe(text, repeats);
 }
 
 /**

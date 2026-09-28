@@ -14,6 +14,11 @@ bool Parser::client_settings(client::Settings& output) noexcept {
     bool hasInvertSplashScreens = false;
     bool hasTitleFiligree = false;
     bool hasDumpGpuEntries = false;
+    bool hasStallTrace = false;
+    bool hasEffectTrace = false;
+    bool hasSelectorWatch = false;
+    bool hasAudioTrace = false;
+    bool hasActionTrace = false;
     bool hasFadeRelease = false;
     bool hasForceJoinRequestReady = false;
     bool hasRegionPrivate = false;
@@ -60,6 +65,31 @@ bool Parser::client_settings(client::Settings& output) noexcept {
                 return false;
             }
             hasDumpGpuEntries = true;
+        } else if (key == "stall_trace") {
+            if (hasStallTrace || !boolean(candidate.stallTrace)) {
+                return false;
+            }
+            hasStallTrace = true;
+        } else if (key == "effect_trace") {
+            if (hasEffectTrace || !boolean(candidate.effectTrace)) {
+                return false;
+            }
+            hasEffectTrace = true;
+        } else if (key == "selector_watch") {
+            if (hasSelectorWatch || !boolean(candidate.selectorWatch)) {
+                return false;
+            }
+            hasSelectorWatch = true;
+        } else if (key == "audio_trace") {
+            if (hasAudioTrace || !boolean(candidate.audioTrace)) {
+                return false;
+            }
+            hasAudioTrace = true;
+        } else if (key == "action_trace") {
+            if (hasActionTrace || !boolean(candidate.actionTrace)) {
+                return false;
+            }
+            hasActionTrace = true;
         } else if (key == "fade_release") {
             if (hasFadeRelease || !boolean(candidate.fadeRelease)) {
                 return false;

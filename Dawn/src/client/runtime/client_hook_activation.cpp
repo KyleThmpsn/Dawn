@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "../../core/logging/log.h"
+#include "../../core/settings/settings.h"
 #include "../../core/ui/busy/busy.h"
 #include "../../core/ui/notice/ui_notice_overlay.h"
 #include "../content/bootstrap/bootstrap_token_publish.h"
@@ -24,6 +25,13 @@
 #include "../hooks/noclip/runtime.h"
 #include "../hooks/package_trust/package_trust_bypass.h"
 #include "../hooks/polled_input/runtime.h"
+#include "../hooks/probes/action_trace/action_trace.h"
+#include "../hooks/probes/audio_trace/audio_trace.h"
+#include "../hooks/probes/effect_trace/effect_trace.h"
+#include "../hooks/probes/hitch_probe/hitch_probe.h"
+#include "../hooks/probes/net_tick_probe/net_tick_probe.h"
+#include "../hooks/probes/selector_watch/selector_watch.h"
+#include "../hooks/probes/stall_probe/stall_probe.h"
 #include "../hooks/queuez/queuez_hook_lifecycle.h"
 #include "../hooks/retail_log/retail_log_lifecycle.h"
 #include "../hooks/teleport/runtime.h"
@@ -164,6 +172,36 @@ void clear_game_targets() noexcept {
     // Diagnostic capture reports its own outcome and never demotes this stage.
     (void)hooks::retail_log::install();
     (void)hooks::assert_handler::install();
+    const auto& diagnostics = core::settings::get().client;
+    core::log::writef(core::log::Channel::client, core::log::Level::info,
+                      "ev=diagnostics stage=policy stall_trace=%u effect_trace=%u selector_watch=%u "
+                      "audio_trace=%u action_trace=%u",
+                      diagnostics.stallTrace ? 1U : 0U, diagnostics.effectTrace ? 1U : 0U,
+                      diagnostics.selectorWatch ? 1U : 0U, diagnostics.audioTrace ? 1U : 0U,
+                      diagnostics.actionTrace ? 1U : 0U);
+    // Stack capture suspends game threads and can perturb the stall it measures.
+    if (diagnostics.stallTrace) {
+        (void)hooks::probes::hitch_probe::install();
+        (void)hooks::probes::stall_probe::install();
+        // Resolved here, inside the sweep, so the first sample never scans on the game's thread.
+        hooks::probes::net_tick_probe::prepare();
+    }
+    // Read-only effects applied and removed, perk spawns, weapon fire, and every projectile launch
+    // and its flight.
+    if (diagnostics.effectTrace) {
+        (void)hooks::probes::effect_trace::install();
+    }
+    // Read-only memory watch driven by Dawn\selector_watch.txt; inert while the file is absent.
+    if (diagnostics.selectorWatch) {
+        (void)hooks::probes::selector_watch::install();
+    }
+    // Each of these also needs its watch file in the Dawn folder; inert while the file is absent.
+    if (diagnostics.audioTrace) {
+        (void)hooks::probes::audio_trace::install();
+    }
+    if (diagnostics.actionTrace) {
+        (void)hooks::probes::action_trace::install();
+    }
     (void)hooks::config_getter::install();
     // Boot-step fixes scan for their own single-site targets; each reports its own outcome.
     (void)hooks::bootflow::install();
