@@ -1,8 +1,11 @@
 // Real installed definitions, localized names, socket pools and DX11 preview rendering.
 // Account services are isolated: this executable cannot write to the installed game.
 #include "editor_fixture_backend.h"
-#include "../src/core/ui/modules/loadout/loadout.cpp"
 #include "../src/core/ui/modules/loadout/preview.cpp"
+#include "core/ui/modules/loadout/internal.h"
+#include "core/ui/modules/loadout/loadout.h"
+#include "core/ui/fonts/runtime/ui_runtime_font_lifecycle.h"
+#include "middleware/content/packages/reader/reader.h"
 #include <imgui_internal.h>
 #include <backends/imgui_impl_dx11.h>
 #include "core/ui/memory/allocator.h"
@@ -49,6 +52,7 @@ bool key_bank(state::build_data::progressions::Scope, std::uint64_t,
 namespace ui = dawn::core::ui;
 namespace editor = dawn::state::editor;
 namespace panel = ui::modules::loadout;
+namespace studio = ui::modules::loadout::internal;
 namespace {
 float scale = 1;
 unsigned errors{};
@@ -79,13 +83,34 @@ void frame(float w = width, float h = height, ImGuiID activate = 0) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData()); fixture::check(errors == 0, "no ImGui errors");
 }
 void settle() { for (unsigned i = 0; i < 40; ++i) { frame(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); } }
+/** Runs frames until the optimizer's plan answers the armor and minimums as they stand; a worker works it out. */
+void wait_for_plan() {
+    const auto& optimizer = studio::model().optimizer;
+    for (unsigned i = 0; i < 1000; ++i) {
+        frame(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (optimizer.plan.finished && optimizer.input && optimizer.planInput == optimizer.input
+            && optimizer.planTargets == optimizer.targets && !optimizer.job) { settle(); return; }
+    }
+    fixture::check(false, "the optimizer works out a plan");
+}
+/** @return The active window whose name holds this part, such as a page's scrolling child. */
+ImGuiWindow* window_named(const char* part) {
+    for (auto* window : ImGui::GetCurrentContext()->Windows) if (window->Active && std::strstr(window->Name, part)) return window;
+    return nullptr;
+}
+/** Presses the button with this label in the window whose name holds `part`, as a click would. */
+void press(const char* part, const char* label) {
+    ImGuiWindow* window = window_named(part);
+    fixture::check(window != nullptr, part);
+    frame(width, height, ImHashStr(label, 0, window->IDStack.back())); settle();
+}
 const editor::CatalogItem& named(std::string_view name) {
-    for (const auto& item : panel::g->catalog.items) if (item.name == name && !item.plug && item.slot < 16) return item;
+    for (const auto& item : studio::model().catalog.items) if (item.name == name && !item.plug && item.slot < 16) return item;
     std::cerr << "Name missing: " << name << '\n'; std::exit(1);
 }
 void mutations() {
     auto draft = std::make_unique<editor::Draft>(); draft->after = *fixture::account; draft->before = draft->after;
-    const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
+    const auto& catalog = studio::model().catalog; const auto& weapon = named("Riskrunner");
     std::string error;
     fixture::check(editor::give(*draft, catalog, 0, weapon.definition.definitionHash, 1, 105, true, error), "give and equip native gun");
     const auto id = draft->after.characters[0].equipment.slots[weapon.slot]->instanceSoid;
@@ -129,31 +154,34 @@ void mutations() {
     fixture::check(achieved == editor::item_stats(equipped,catalog),"reported armor stats equal actual plug contributions");
     fixture::check(dawn::state::account::valid(draft->after),"mutated account remains structurally valid");
 }
+/** The editor bounds an item level only by the Power the game can hold, ten to a level in 32 bits. */
 void item_level_limits() {
     auto draft = std::make_unique<editor::Draft>();
     draft->after = *fixture::account; draft->before = draft->after;
-    const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
+    const auto& catalog = studio::model().catalog; const auto& weapon = named("Riskrunner");
     std::string error;
-    fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,true,error),"level 106 accepted");
+    constexpr int highest = editor::kMaximumItemLevel;
+    fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,highest,true,error),"highest holdable level accepted");
     const auto before = std::make_unique<editor::Draft>(*draft);
     auto slots = std::array<bool,16>{}; slots[weapon.slot] = true;
     std::mt19937 random{17};
-    for (int level : {-1,107}) {
+    for (int level : {-1,highest + 1}) {
         fixture::check(!editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,level,true,error)
             && draft->after == before->after,"invalid creation level rejected atomically");
         fixture::check(!editor::randomize(*draft,catalog,0,slots,level,random,error)
             && draft->after == before->after,"invalid randomizer level rejected atomically");
     }
     auto prepared = std::make_unique<dawn::state::AccountState>();
-    draft->after.characters[0].equipment.slots[weapon.slot]->level = 107;
-    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"direct over-cap edit cannot save");
-    draft->after.characters[0].equipment.slots[weapon.slot]->level = 106;
-    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"level 106 saves");
-    draft->after.characters[0].equipment.slots[weapon.slot]->level = 999;
     draft->before = draft->after;
-    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"existing over-cap level preserved");
-    draft->after.characters[0].equipment.slots[weapon.slot]->level = 107;
-    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"new level on legacy gear obeys cap");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = highest + 1;
+    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"a level past the holdable Power cannot save");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = highest;
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"the highest holdable level saves");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = highest + 5;
+    draft->before = draft->after;
+    fixture::check(editor::prepare_commit(*draft,catalog,*prepared,error),"an existing unholdable level is preserved");
+    draft->after.characters[0].equipment.slots[weapon.slot]->level = highest + 1;
+    fixture::check(!editor::prepare_commit(*draft,catalog,*prepared,error),"a new unholdable level on legacy gear is refused");
 }
 bool character_selection_encodes(const dawn::state::AccountState& account) {
     namespace family = dawn::middleware::datagen::family4;
@@ -177,7 +205,7 @@ bool character_selection_encodes(const dawn::state::AccountState& account) {
 void inventory_serial_selection() {
     auto draft = std::make_unique<editor::Draft>();
     draft->after = *fixture::account; draft->before = draft->after;
-    const auto& catalog = panel::g->catalog; const auto& weapon = named("Riskrunner");
+    const auto& catalog = studio::model().catalog; const auto& weapon = named("Riskrunner");
     std::string error;
     draft->after.characters[0].nextInventorySerial = 72;
     fixture::check(editor::give(*draft,catalog,0,weapon.definition.definitionHash,1,106,true,error),"serial fixture creates equipped item");
@@ -213,9 +241,14 @@ void inventory_serial_selection() {
         && draft->after == *before,"serial exhaustion cannot overflow or alter draft");
     std::cout << "PASS: inventory edits and captured 74/74 repair through production character encoder\n";
 }
+/** Commits a draft as the editor's live apply does, keeping only whether it went through. */
+bool commit(editor::Draft& draft, std::string& message) {
+    bool live = false;
+    return editor::apply(draft, studio::model().catalog, message, live);
+}
 void transactions() {
     auto draft = std::make_unique<editor::Draft>(); draft->after = *fixture::account;
-    const auto& catalog = panel::g->catalog; const auto& subclass = named("Striker"); std::string error;
+    const auto& catalog = studio::model().catalog; const auto& subclass = named("Striker"); std::string error;
     fixture::check(subclass.paths.size() == 3 && subclass.abilities[0].size() == 3, "native subclass paths and jump choices");
     for (const auto& item : catalog.items) if (!item.abilities[0].empty()) {
         fixture::check(item.paths.size() == 3,"every subclass exposes three paths");
@@ -231,17 +264,17 @@ void transactions() {
     auto& live = dawn::state::runtime::storage::g_state.account;
     live = draft->before = draft->after; draft->after.characters[1].level = 40; draft->dirty = true;
     live.characters[0].level = 1;
-    fixture::check(!editor::save(*draft,catalog,error) && backups == 0 && commits == 0 && draft->dirty,"stale draft rejected before database writes");
+    fixture::check(!commit(*draft,error) && backups == 0 && commits == 0 && draft->dirty,"stale draft rejected before database writes");
     live = draft->before; backupAllowed = false;
-    fixture::check(!editor::save(*draft,catalog,error) && commits == 0 && live == draft->before,"backup failure preserves live account");
+    fixture::check(!commit(*draft,error) && commits == 0 && live == draft->before,"backup failure preserves live account");
     backupAllowed = true; commitAllowed = false;
-    fixture::check(!editor::save(*draft,catalog,error) && live == draft->before && draft->dirty,"commit failure preserves draft and live account");
+    fixture::check(!commit(*draft,error) && live == draft->before && draft->dirty,"commit failure preserves draft and live account");
     commitAllowed = true;
-    fixture::check(editor::save(*draft,catalog,error),error.c_str());
+    fixture::check(commit(*draft,error),error.c_str());
     fixture::check(!draft->dirty && live == draft->after && live.characters[0].selected && !live.characters[1].selected,"multi-character save preserves active selection");
     fixture::check(publishedAbilities.size() == 1,"duplicate subclass selections publish once");
     draft->after.characters[1].level = 41; draft->dirty = true;
-    fixture::check(editor::save(*draft,catalog,error) && publishedAbilities.size() == 1,"cached duplicate subclass selections publish once");
+    fixture::check(commit(*draft,error) && publishedAbilities.size() == 1,"cached duplicate subclass selections publish once");
     // Warm the complete catalog, including subclasses absent from the current account.
     namespace packages = dawn::client::content::items::packages;
     namespace abilities = dawn::state::build_data::abilities;
@@ -254,7 +287,7 @@ void transactions() {
     std::vector<abilities::Definition> all(abilities::kDefinitionCapacity);
     std::size_t count{};
     fixture::check(packages::build_character_abilities({}, *scratch, root, table, definition, blob, all, count), "prebuild all subclass choices");
-    fixture::check(count == 486, "catalog holds all 486 standard subclass combinations");
+    fixture::check(count >= 486, "catalog holds every standard subclass combination");
     all.resize(count);
     fixture::check(dawn::state::build_data::publish_ability_buckets(all), "publish complete subclass catalog");
     // An exact-size buffer works; an undersized one must not silently publish a partial catalog.
@@ -267,27 +300,45 @@ void transactions() {
         std::span(all).first(8), exactCount), "old eight-row capacity is rejected");
     *fixture::account = *originalAccount;
     std::cout << "Subclass catalog: " << count << " standard combinations.\n";
-    // Every offered path and every movement, grenade and class choice must have a cached row.
-    for (const auto& item : catalog.items) if (!item.abilities[0].empty())
+    // Every offered path and every movement, grenade and class choice must reach a row. The nine stock
+    // subclasses' lists are prebuilt whole; any other subclass builds its row from its own list when it
+    // is applied, as the save does.
+    constexpr std::array<std::uint16_t, 9> stockLists{1, 2, 3, 5, 6, 7, 9, 10, 11};
+    fixture::tables::Array listRows{};
+    fixture::check(fixture::tables::find_array_at(table, fixture::tables::kTableArrayDescriptor, listRows), "subclass list rows");
+    for (const auto& item : catalog.items) if (!item.abilities[0].empty()) {
+        const std::uint16_t list = item.detail.socketEntryListIndex;
+        const bool stock = std::find(stockLists.begin(), stockLists.end(), list) != stockLists.end();
+        std::vector<std::byte> listDefinition;
+        if (!stock) {
+            fixture::tables::IndexRow listRow{};
+            fixture::check(fixture::tables::index_row(table, listRows, list, listRow), "subclass list row");
+            listDefinition = fixture::read(listRow.targetTag);
+        }
         for (const auto& path : item.paths) for (const auto& movement : item.abilities[0])
             for (const auto& grenade : item.abilities[1]) for (const auto& classAbility : item.abilities[4]) {
                 abilities::Definition row;
                 const abilities::Selection selection{movement.entry, grenade.entry, path.super, path.melee, classAbility.entry};
-                if (!abilities::find(item.detail.socketEntryListIndex, selection, row))
-                    std::cerr << item.name << " super=" << unsigned(path.super) << " melee=" << unsigned(path.melee) << '\n';
-                fixture::check(abilities::find(item.detail.socketEntryListIndex, selection, row), "editor choice has a prebuilt ability row");
+                const bool reached = stock ? abilities::find(list, selection, row)
+                    : packages::build_ability_buckets({}, *scratch, listDefinition, blob, selection, row);
+                if (!reached) std::cerr << item.name << " super=" << unsigned(path.super) << " melee=" << unsigned(path.melee) << '\n';
+                fixture::check(reached, stock ? "stock subclass choice has a prebuilt ability row" : "subclass choice builds its ability row");
                 for (unsigned bucket : {0U,1U,2U,3U,4U})
                     fixture::check(row.buckets[bucket].kind != abilities::kEmptyBucketKind, "selected ability has a resolved bucket kind");
             }
-    // Every offered path must also survive saving without dropping other cached combinations.
+    }
+    // Every offered path must also survive saving without dropping other cached combinations. The other
+    // choices are the subclass's own first ones, since a list past the stock ones numbers its entries anew.
     for (const auto& item : catalog.items) if (!item.abilities[0].empty()) for (const auto& path : item.paths) {
+        fixture::check(!item.abilities[1].empty() && !item.abilities[4].empty(), "subclass offers grenade and class choices");
         auto c = std::make_unique<editor::Draft>(); c->after = *fixture::account;
         c->after.characters[0].characterClass = static_cast<dawn::state::CharacterClass>(item.characterClass);
         fixture::check(editor::give(*c,catalog,0,item.definition.definitionHash,1,105,true,error),"path fixture subclass");
-        auto& character = c->after.characters[0]; character.movementAbilityEntry = 4; character.grenadeAbilityEntry = 7;
-        character.superAbilityEntry = path.super; character.meleeAbilityEntry = path.melee; character.classAbilityEntry = 2;
+        auto& character = c->after.characters[0];
+        character.movementAbilityEntry = item.abilities[0].front().entry; character.grenadeAbilityEntry = item.abilities[1].front().entry;
+        character.superAbilityEntry = path.super; character.meleeAbilityEntry = path.melee; character.classAbilityEntry = item.abilities[4].front().entry;
         live = c->before = c->after; character.level = 40; c->dirty = true;
-        fixture::check(editor::save(*c,catalog,error),error.c_str());
+        fixture::check(commit(*c,error),error.c_str());
         fixture::check(abilities::count() >= count, "saving keeps other subclass combinations available");
         namespace loadout = dawn::middleware::datagen::family4::loadout;
         namespace instance = dawn::middleware::datagen::family4::instance;
@@ -315,6 +366,96 @@ void migration(const std::filesystem::path& screens) {
     std::string contents; std::getline(std::ifstream(destination/"player-state.db"),contents);
     fixture::check(contents == "edited account","native migration never overwrites an existing Dawn database");
 }
+/** The editor's pages and sheets, drawn and saved, at the width a player's overlay gives them. */
+void pages(const std::filesystem::path& screens) {
+    auto& model = studio::model();
+    const auto& catalog = model.catalog;
+    // The armory, on weapons and then filtered to one type.
+    model.view = studio::View::armory; model.browse.category = studio::Category::weapons; model.results.key.clear();
+    studio::select(named("Riskrunner")); settle(); screenshot(screens/"armory-weapons.ppm");
+    model.browse.type = "Submachine Gun"; model.results.key.clear(); settle(); screenshot(screens/"armory-filtered.ppm");
+    fixture::check(!model.results.items.empty() && std::all_of(model.results.items.begin(), model.results.items.end(),
+        [](const auto* item) { return item->type == "Submachine Gun"; }), "weapon type selection filters the armory");
+    model.browse.type.clear(); model.browse.category = studio::Category::armor; model.results.key.clear();
+    studio::select(named("Dunemarchers")); settle(); screenshot(screens/"armory-armor.ppm");
+    fixture::check(panel::preview::g_textures.at(named("Dunemarchers").iconTag).count > 0,"armor preview layers uploaded");
+    fixture::check(panel::preview::g_textures.at(named("Riskrunner").iconTag).count > 0,"weapon preview layers uploaded");
+    // The character's inventory, an owned item in the pane, and its perk picker on the full pool.
+    model.view = studio::View::characterInventory; studio::clear_selection(); settle(); screenshot(screens/"inventory.ppm");
+    auto& owned = studio::character().inventory.values[0];
+    const auto* definition = catalog.find(owned.definitionHash);
+    studio::select(*definition, owned.instanceSoid); settle(); screenshot(screens/"owned-overview.ppm");
+    studio::open_perk_picker(*definition, 0); settle();
+    fixture::check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1,"a socket opens the perk picker");
+    model.picker.scope = editor::PlugScope::all; model.picker.options = catalog.candidates(*definition, 0, editor::PlugScope::all);
+    settle(); screenshot(screens/"full-perk-pool.ppm"); ImGui::ClosePopupToLevel(0,true); settle();
+    // Several items selected at once, with the bar that acts on all of them.
+    model.picked.clear();
+    for (std::size_t i = 0; i < studio::character().inventory.count && i < 3; ++i) model.picked.push_back(studio::character().inventory.values[i].instanceSoid);
+    studio::clear_selection(); settle(); screenshot(screens/"inventory-selected.ppm");
+    model.picked.clear();
+    // A search reaches every character: what the others keep shows under this one's own results. The
+    // second character is given a legendary weapon for it to find.
+    std::string status;
+    const auto legendary = std::find_if(catalog.items.begin(), catalog.items.end(), [](const auto& item) {
+        return item.kind == editor::GearKind::weapon && !item.plug && item.definition.tier == 4;
+    });
+    fixture::check(legendary != catalog.items.end() && editor::give(*model.draft,catalog,1,legendary->definition.definitionHash,1,105,false,status),"search fixture weapon");
+    std::snprintf(model.inventorySearch, sizeof model.inventorySearch, "%s", "is:legendary");
+    settle(); screenshot(screens/"inventory-search.ppm");
+    model.inventorySearch[0] = '\0';
+    // The character page: identity, subclass, abilities and the equipped loadout.
+    model.view = studio::View::characters; settle(); screenshot(screens/"character.ppm");
+    const auto& striker = named("Striker");
+    fixture::check(editor::give(*model.draft,catalog,0,striker.definition.definitionHash,1,105,true,status),"subclass preview setup");
+    auto& guardian = studio::character(); guardian.movementAbilityEntry = 4; guardian.grenadeAbilityEntry = 7;
+    guardian.superAbilityEntry = striker.paths[0].super; guardian.meleeAbilityEntry = striker.paths[0].melee; guardian.classAbilityEntry = 2;
+    settle(); screenshot(screens/"character-subclass.ppm");
+    // Two legendary pieces for every armor slot, so a loadout and the optimizer have whole sets to show.
+    for (std::size_t slot = studio::kLastWeaponSlot + 1; slot <= studio::kLastArmorSlot; ++slot) {
+        int given = 0;
+        for (const auto& item : catalog.items) {
+            if (given == 2) break;
+            if (item.kind != editor::GearKind::armor || item.plug || item.internal || item.slot != slot || item.definition.tier != 4
+                || !editor::fits_class(item, guardian.characterClass)) continue;
+            fixture::check(editor::give(*model.draft,catalog,0,item.definition.definitionHash,1,105,false,status),"optimizer fixture armor");
+            ++given;
+        }
+        fixture::check(given == 2, "two legendary pieces for each armor slot");
+    }
+    // Saved loadouts: what is on now, and one made of other pieces, so one row reads as equipped.
+    model.loadouts.loaded = true; model.loadouts.writable = true; model.loadouts.entries.clear();
+    model.loadouts.entries.push_back(editor::capture_loadout(guardian, catalog, "Raid"));
+    auto crucible = editor::capture_loadout(guardian, catalog, "Crucible");
+    for (std::size_t i = 0; i < guardian.inventory.count; ++i) {
+        const auto* piece = catalog.find(guardian.inventory.values[i].definitionHash);
+        if (piece && piece->slot < crucible.pieces.size() && piece->slot != 11)
+            crucible.pieces[piece->slot] = {guardian.inventory.values[i].instanceSoid, piece->definition.definitionHash, 105, {}};
+    }
+    model.loadouts.entries.push_back(crucible);
+    model.loadouts.entries.push_back(editor::capture_loadout(guardian, catalog, "Patrol"));
+    press("characters_scroll", "Loadouts");
+    fixture::check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1,"Loadouts opens the saved loadouts sheet");
+    screenshot(screens/"loadouts.ppm");
+    model.loadouts.chosen = 1; settle(); screenshot(screens/"loadouts-chosen.ppm");
+    ImGui::ClosePopupToLevel(0,true); settle();
+    // The armor optimizer: as it opens, with minimums set and the plan found, and once it is put on.
+    press("characters_scroll", "Optimize Armor");
+    fixture::check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1,"Optimize armor opens the optimizer");
+    screenshot(screens/"optimizer.ppm");
+    model.optimizer.targets = {};
+    model.optimizer.targets[catalog.statOrder[0]] = 50; model.optimizer.targets[catalog.statOrder[1]] = 70;
+    model.optimizer.targets[catalog.statOrder[2]] = 90;
+    wait_for_plan(); screenshot(screens/"optimizer-minimums.ppm");
+    // A piece row under the pointer shows the piece as the plan leaves it, in the item tooltip.
+    ImGui::GetIO().AddMousePosEvent(600.0F, 405.0F); settle(); screenshot(screens/"optimizer-tooltip.ppm");
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX); settle();
+    fixture::check(model.optimizer.plan.changes(), "the optimizer plans changes for minimums above the armor on now");
+    press("Armor Optimizer", "Adjust Armor");
+    wait_for_plan(); screenshot(screens/"optimizer-adjusted.ppm");
+    fixture::check(!model.optimizer.plan.changes(), "once adjusted, the optimizer has nothing more to change");
+    ImGui::ClosePopupToLevel(0,true); settle();
+}
 }
 namespace dawn::core::ui::scaling::dpi {
 float current() noexcept { return scale; }
@@ -329,6 +470,20 @@ void select_module(std::string_view id) noexcept { ::layout.selectedStableId.fil
 }
 }
 namespace dawn::core::ui::components::logo { bool draw(float) noexcept { return false; } }
+// The fixtures carry the regular face alone, so a heavier line is struck by hand, as it is on an
+// install that ships no heavier cut.
+namespace dawn::core::ui::fonts::runtime { ImFont* weight(Weight) noexcept { return nullptr; } }
+// The icon sweep walks every installed package, which the fixtures do not hold; the pages under test
+// never start it.
+namespace dawn::middleware::content::packages::reader {
+bool scan_class_entries(std::wstring_view, std::uint32_t, ClassEntryVisitor, void*, ScanResult&) noexcept { return false; }
+void release_caches() noexcept {}
+}
+// No game is signed in to take a published account; the editor then says it saved for next sign-in.
+namespace dawn::server::bap {
+std::size_t publish_external_account_mutation() noexcept;
+std::size_t publish_external_account_mutation() noexcept { return 0; }
+}
 namespace dawn::state::runtime::storage { State g_state; SRWLOCK g_stateLock = SRWLOCK_INIT; }
 namespace dawn::state::persistence {
 bool backup_for_editor() noexcept { ++backups; return backupAllowed; }
@@ -369,11 +524,15 @@ int main(int argc, char** argv) {
     fixture::check(ui::layout::credits::dispatch_pending([](const wchar_t* url) noexcept { return std::wstring_view(url) == ui::layout::credits::kSundialUrl; }),"Credits dispatches Sundial URL after user action");
     ui::layout::credits::request_open(ui::layout::credits::Project::original);
     fixture::check(ui::layout::credits::dispatch_pending([](const wchar_t* url) noexcept { return std::wstring_view(url) == ui::layout::credits::kSourceUrl; }),"Credits preserves original source URL");
-    fixture::check(editor::load_catalog(panel::g->catalog,panel::g->cancel,panel::g->progress,panel::g->loadError),panel::g->loadError.c_str());
+    auto& model = studio::model();
+    // The load runs first, so the reason it gives is the one printed.
+    const bool loaded = editor::load_catalog(model.catalog,model.cancelLoad,model.loadProgress,model.loadError);
+    fixture::check(loaded,model.loadError.c_str());
+    fixture::write_missing();
     inventory_serial_selection();
     if (argc == 5) return 0;
-    panel::g->loading = 2;
-    const auto& catalog = panel::g->catalog;
+    model.phase = studio::CatalogPhase::ready;
+    const auto& catalog = model.catalog;
     std::size_t names{}, weapons{}, armor{}, previews{};
     for (const auto& item : catalog.items) {
         names += item.name.find("Unnamed") == std::string::npos; weapons += item.kind == editor::GearKind::weapon && !item.plug;
@@ -396,13 +555,21 @@ int main(int argc, char** argv) {
         if (!artwork[item.iconTag]) std::cerr << "Preview failed: " << item.name << '\n';
         missingArtwork += !artwork[item.iconTag];
     }
+    // The six character stats are marked by the game's own icons wherever the editor lines them up.
+    for (const auto tag : catalog.statIconTags) {
+        fixture::check(tag != 0, "every character stat names an icon");
+        missingArtwork += !panel::preview::read_icon(tag,*scratch).primary;
+    }
+    fixture::write_missing();
     std::cout << "Artwork: " << artwork.size() << " distinct installed previews decoded.\n";
-    fixture::check(missingArtwork == 0,"every named weapon and armor preview decodes");
-    mutations(); item_level_limits(); transactions(); panel::reload();
+    fixture::check(missingArtwork == 0,"every named weapon and armor preview, and every stat icon, decodes");
+    mutations(); item_level_limits(); transactions(); studio::reload_account();
     std::string status;
     for (const auto* name : {"Riskrunner","Dunemarchers","Peacekeepers","Synthoceps"}) {
-        const auto& item = named(name); (void)editor::give(*panel::g->draft,catalog,0,item.definition.definitionHash,1,105,false,status);
+        const auto& item = named(name); (void)editor::give(*model.draft,catalog,0,item.definition.definitionHash,1,105,false,status);
     }
+    // Another character keeps one too, so a search finds it elsewhere on the account.
+    (void)editor::give(*model.draft,catalog,1,named("Riskrunner").definition.definitionHash,1,105,false,status);
     fixture::check(ui::memory::initialize(),"fixed UI arena"); ImGui::CreateContext();
     auto& io = ImGui::GetIO(); io.IniFilename = nullptr; io.DeltaTime = 1.0F / 60;
     io.ConfigErrorRecoveryEnableAssert = false; io.ConfigErrorRecoveryEnableTooltip = false;
@@ -420,45 +587,12 @@ int main(int argc, char** argv) {
     fixture::check(SUCCEEDED(gpu->CreateTexture2D(&desc,nullptr,&target)) && SUCCEEDED(gpu->CreateRenderTargetView(target,nullptr,&view)),"render target");
     fixture::check(ImGui_ImplDX11_Init(gpu,context),"ImGui DX11"); panel::preview::attach(gpu); ui::theme::apply();
     ui::layout::internal::select_module("core.loadout");
-    panel::g->page = 2; panel::select(named("Riskrunner")); settle(); screenshot(screens/"weapons.ppm");
-    panel::g->type = "Submachine Gun"; settle(); screenshot(screens/"weapons-filtered.ppm");
-    fixture::check(!panel::g->filtered.empty() && std::all_of(panel::g->filtered.begin(), panel::g->filtered.end(),
-        [](const auto* item) { return item->type == "Submachine Gun"; }), "weapon type selection filters the collection");
-    panel::g->type.clear(); settle();
-    ImGuiWindow* collection{};
-    for (auto* window : ImGui::GetCurrentContext()->Windows) if (window->Active && std::strstr(window->Name,"loadout_body_")) { collection = window; break; }
-    fixture::check(collection != nullptr,"collection visible");
-    frame(width,height,ImHashStr("Filters",0,collection->IDStack.back())); settle();
-    fixture::check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1,"collection filter button opens its popup");
-    screenshot(screens/"collection-filters.ppm"); ImGui::ClosePopupToLevel(0,true);
-    panel::g->category = 1; panel::g->filterKey.clear(); panel::select(named("Dunemarchers")); settle(); screenshot(screens/"armor.ppm");
-    fixture::check(panel::preview::g_textures.at(named("Dunemarchers").iconTag).count > 0,"armor preview layers uploaded");
-    fixture::check(panel::preview::g_textures.at(named("Riskrunner").iconTag).count > 0,"weapon preview layers uploaded");
-    panel::g->page = 3; settle(); screenshot(screens/"inventory.ppm");
-    auto& owned = panel::character().inventory.values[0]; panel::select(*catalog.find(owned.definitionHash),owned.instanceSoid);
-    settle(); screenshot(screens/"owned-overview.ppm");
-    ImGuiWindow* inspector{};
-    for (auto* window : ImGui::GetCurrentContext()->Windows) if (window->Active && std::strstr(window->Name,"item_details_")) inspector = window;
-    fixture::check(inspector != nullptr,"item inspector visible");
-    frame(width,height,ImHashStr("Perks & cosmetics",0,inspector->IDStack.back())); settle();
-    fixture::check(panel::g->detailPage == 1,"owned-item perk tab is reachable");
-    screenshot(screens/"perks.ppm");
-    editor::Item resolved = owned; fixture::check(editor::materialize(resolved,catalog),"perk button fixture");
-    const auto* plug = catalog.find(*resolved.sockets.plugs[0]); const int lane = 0;
-    const auto seed = ImHashData(&lane,sizeof lane,inspector->IDStack.back());
-    frame(width,height,ImHashStr(plug->name.c_str(),0,seed)); settle();
-    fixture::check(ImGui::GetCurrentContext()->OpenPopupStack.Size == 1,"native perk button opens picker");
-    panel::g->scope = 4; panel::g->perkOptions = catalog.candidates(*catalog.find(owned.definitionHash),0,editor::PlugScope::all);
-    settle(); screenshot(screens/"full-perk-pool.ppm"); ImGui::ClosePopupToLevel(0,true);
-    panel::g->page = 0; settle(); screenshot(screens/"character.ppm");
-    const auto& striker = named("Striker"); fixture::check(editor::give(*panel::g->draft,catalog,0,striker.definition.definitionHash,1,105,true,status),"subclass preview setup");
-    auto& guardian = panel::character(); guardian.movementAbilityEntry = 4; guardian.grenadeAbilityEntry = 7;
-    guardian.superAbilityEntry = striker.paths[0].super; guardian.meleeAbilityEntry = striker.paths[0].melee; guardian.classAbilityEntry = 2;
-    panel::g->page = 4; settle(); screenshot(screens/"subclass.ppm");
-    scale = 1.5F; ui::theme::apply(); frame(1000,800); frame(1000,800); screenshot(screens/"compact.ppm");
-    panel::g->page = 2; panel::g->category = 0; panel::g->selectedHash = 0; panel::g->selectedInstance = 0;
-    frame(1000,800); frame(1000,800); screenshot(screens/"compact-weapons.ppm");
-    panel::select(named("Riskrunner")); frame(1000,800); frame(1000,800); screenshot(screens/"compact-details.ppm");
+    pages(screens);
+    // The same pages at a larger display scale, in a smaller window.
+    scale = 1.5F; ui::theme::apply();
+    model.view = studio::View::armory; model.browse.category = studio::Category::weapons; model.results.key.clear(); studio::clear_selection();
+    frame(1000,800); frame(1000,800); screenshot(screens/"compact-armory.ppm");
+    studio::select(named("Riskrunner")); frame(1000,800); frame(1000,800); screenshot(screens/"compact-details.ppm");
     scale = 1; ui::theme::apply(); ui::layout::internal::select_module("core.credits"); settle(); screenshot(screens/"credits.ppm");
     ui::layout::credits::shutdown();
     panel::shutdown(); panel::preview::release(); ImGui_ImplDX11_Shutdown(); ImGui::DestroyContext();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
 #include <imgui.h>
+#include <string_view>
 
 #include "../../../scaling/dpi/ui_dpi_scaling.h"
 #include "../controls.h"
@@ -28,10 +29,6 @@ constexpr float kFieldRowGap = 2.0F;
 /** Sundial clamps a selector between these however wide its group is. */
 constexpr float kSelectorMinimumWidth = 110.0F;
 constexpr float kSelectorMaximumWidth = 190.0F;
-/** Armor totals row: Sundial draws 15px icons, 4px between parts and 10px between stats. */
-constexpr float kStatIconExtent = 15.0F;
-constexpr float kStatItemSpacing = 4.0F;
-constexpr float kStatGap = 10.0F;
 /** Armor occupies slots 3 through 7, which are the slots that carry stats. */
 constexpr std::size_t kFirstArmorSlot = 3;
 /** Highest level the game awards, which is where the level field clamps. */
@@ -42,7 +39,7 @@ constexpr const char* kRaceItems = "Human\0Awoken\0Exo\0";
 constexpr const char* kGenderItems = "Male\0Female\0";
 /** Shown on the class field, which cannot apply until the gear matches it. */
 constexpr const char* kClassNote =
-    "Changing class needs matching armor and a subclass before it can apply.";
+    "A new class needs its own armor and subclass.";
 
 /** @return The control width one group gives its fields. */
 [[nodiscard]] float selector_width(float groupWidth, float labelWidth) noexcept {
@@ -126,55 +123,64 @@ void draw_identity_group(state::CharacterState& value, float groupWidth, float l
         if (!value.equipment.slots[slot]) {
             continue;
         }
-        const edit::Stats stats = edit::item_stats(*value.equipment.slots[slot], catalog);
-        std::uint16_t group = edit::kNoStatGroup;
-        if (const auto* definition = catalog.find(value.equipment.slots[slot]->definitionHash)) {
-            group = definition->statGroupIndex;
-        }
+        const edit::Stats shown = edit::shown_stats(*value.equipment.slots[slot], catalog);
         for (std::size_t i = 0; i < totals.size(); ++i) {
-            totals[i] += edit::display_stat(catalog, group, catalog.statRows[i], stats[i]);
+            totals[i] += shown[i];
         }
     }
     return totals;
 }
 
+/** Shows a stat's full name while the pointer is on the part of its line just drawn. */
+void name_stat_under_pointer(std::string_view label) noexcept {
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%.*s", static_cast<int>(label.size()), label.data());
+    }
+}
+
+} // namespace
+
 /**
- * Draws the armor totals as one wrapped row, the way Sundial's equipped stat row reads.
- * Six labelled bars filled a column and most of a page; an icon, a name and a value per stat fit
- * on a single line with room to spare.
+ * The line reads the way Sundial's equipped stat row reads. Six labelled bars filled a column and
+ * most of a page; an icon, a name and a value per stat fit on a single line with room to spare.
  */
-void draw_armor_totals_row(const state::CharacterState& value) noexcept {
-    const edit::Stats totals = armor_totals(value);
+void draw_stat_totals(const edit::Stats& totals, bool named) noexcept {
     const Model& state = model();
     const float icon = pixels(kStatIconExtent);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2{pixels(kStatItemSpacing), ImGui::GetStyle().ItemSpacing.y});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{pixels(kStatPartGap), ImGui::GetStyle().ItemSpacing.y});
     for (std::size_t shown = 0; shown < totals.size(); ++shown) {
         const std::size_t i = state.catalog.statOrder[shown];
         if (shown != 0) {
             ImGui::SameLine(0.0F, pixels(kStatGap));
         }
-        const std::uint32_t tag = state.catalog.statIconTags[i];
-        if (tag != 0) {
-            const ImVec2 at = ImGui::GetCursorScreenPos();
-            const float lift = (ImGui::GetTextLineHeight() - icon) * 0.5F;
-            if (preview::draw(tag, {at.x, at.y + lift}, icon)) {
-                ImGui::Dummy({icon, ImGui::GetTextLineHeight()});
-                ImGui::SameLine(0.0F, pixels(kStatItemSpacing));
-            }
-        }
         const std::string_view label = edit::stat_label(state.catalog, i);
-        ImGui::TextDisabled("%.*s", static_cast<int>(label.size()), label.data());
-        ImGui::SameLine(0.0F, pixels(kStatItemSpacing));
+        const std::uint32_t tag = state.catalog.statIconTags[i];
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float lift = (ImGui::GetTextLineHeight() - icon) * 0.5F;
+        const bool marked = tag != 0 && preview::draw(tag, {at.x, at.y + lift}, icon);
+        if (marked) {
+            ImGui::Dummy({icon, ImGui::GetTextLineHeight()});
+            if (!named) {
+                name_stat_under_pointer(label);
+            }
+            ImGui::SameLine(0.0F, pixels(kStatPartGap));
+        }
+        // Named, a stat reads in full; short of room, a stat with no icon still keeps its first letters.
+        if (named || !marked) {
+            const std::string_view text = named ? label : label.substr(0, (std::min)(label.size(), kStatAbbreviation));
+            ImGui::TextDisabled("%.*s", static_cast<int>(text.size()), text.data());
+            if (!named) {
+                name_stat_under_pointer(label);
+            }
+            ImGui::SameLine(0.0F, pixels(kStatPartGap));
+        }
         ImGui::Text("%d", totals[i]);
     }
     ImGui::PopStyleVar();
 }
 
-} // namespace
-
 void draw_armor_totals() noexcept {
-    draw_armor_totals_row(character());
+    draw_stat_totals(armor_totals(character()), true);
 }
 
 void draw_character_fields() noexcept {

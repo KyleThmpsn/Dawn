@@ -17,25 +17,22 @@ namespace {
 using scaling::dpi::pixels;
 namespace inv = state::account::inventory;
 
-/** Height of the actions the inspector offers, and the width of a grant field beside its label. */
-constexpr float kSecondaryActionHeight = 28.0F;
+/** Width of a grant field beside its label. The actions the pane offers take the shared action height. */
 constexpr float kGrantFieldWidth = 90.0F;
 /** Title of the item removal, used for both the action and its modal. */
-constexpr const char* kRemoveItemTitle = "Remove item?";
+constexpr const char* kRemoveItemTitle = "Remove Item?";
 /** Width of each of the removal confirmation's two buttons, so the pair reads as one row. */
 constexpr float kConfirmButtonWidth = 92.0F;
 /** The pane's own controls, which say what they do rather than showing a glyph. */
 constexpr const char* kCloseLabel = "Close";
 constexpr const char* kUnequipLabel = "Unequip";
 constexpr const char* kPullLabel = "Pull";
-constexpr const char* kSendLabel = "Send to";
-/** 32 bytes hold a character's name on a button: a class name and a one-digit slot. */
-constexpr std::size_t kCharacterLabelCapacity = 32;
+constexpr const char* kSendLabel = "Send To";
 /** Where the item the pane shows is kept, in the header's words. */
 constexpr const char* kEquippedLabel = "Equipped";
 constexpr const char* kPostmasterLabel = "Postmaster";
-constexpr const char* kInInventoryLabel = "In inventory";
-constexpr const char* kNotInInventoryLabel = "Not in inventory";
+constexpr const char* kInInventoryLabel = "In Inventory";
+constexpr const char* kNotInInventoryLabel = "Not in Inventory";
 
 /** Where the selected item sits on the character, if it is equipped at all. */
 struct Placement {
@@ -56,7 +53,7 @@ struct Placement {
 
 /**
  * @return Where the character already keeps a copy of one catalog item, in the header's words, or
- * "Not in inventory" when it keeps none.
+ * "Not in Inventory" when it keeps none.
  * A pane bound to a catalog entry still offers to add another copy, so it stays bound to the entry;
  * this only lets its header say truthfully whether there is one already. Without it the header read
  * that it was not there beside an item just added to the inventory, and beside any already there.
@@ -191,10 +188,10 @@ void draw_grant(const edit::CatalogItem& definition) noexcept {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float width = ImGui::GetContentRegionAvail().x;
     const float half = equippable ? (width - spacing) * 0.5F : width;
-    add |= controls::primary_button("Add to inventory", {half, pixels(kSecondaryActionHeight)});
+    add |= controls::primary_button("Add to Inventory", {half, pixels(controls::kActionHeight)});
     if (equippable) {
         ImGui::SameLine();
-        equip = ImGui::Button("Add and equip", {half, pixels(kSecondaryActionHeight)});
+        equip = ImGui::Button("Add and Equip", {half, pixels(controls::kActionHeight)});
     }
     if (!add && !equip) {
         return;
@@ -219,7 +216,7 @@ void draw_grant(const edit::CatalogItem& definition) noexcept {
 
 /** Draws the removal action, which only an unequipped, unlocked item offers. */
 void draw_remove_action() noexcept {
-    if (ImGui::Button("Remove from inventory", {-FLT_MIN, pixels(kSecondaryActionHeight)})) {
+    if (ImGui::Button("Remove from Inventory", {-FLT_MIN, pixels(controls::kActionHeight)})) {
         request_removal(model().selection.instanceSoid);
     }
 }
@@ -291,13 +288,10 @@ void draw_item_frame(const edit::CatalogItem& definition,
         }
         first = false;
         const state::CharacterState& other = account.characters[index];
-        char label[kCharacterLabelCapacity]{};
-        (void)std::snprintf(
-            label, sizeof label, "%s %zu", art::class_name(other.characterClass), index + 1);
         const bool fits = edit::fits_class(definition, other.characterClass);
         ImGui::PushID(static_cast<int>(index));
         ImGui::BeginDisabled(!fits);
-        const bool pressed = ImGui::SmallButton(label);
+        const bool pressed = ImGui::SmallButton(character_label(index).c_str());
         ImGui::EndDisabled();
         if (!fits && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             ImGui::SetTooltip("This item belongs to another class.");
@@ -363,7 +357,7 @@ void draw_removal_confirm() noexcept {
         return;
     }
     const edit::CatalogItem* definition = state.catalog.find(item->definitionHash);
-    ImGui::TextUnformatted(definition != nullptr ? definition->name.c_str() : "This item");
+    ImGui::TextUnformatted(definition != nullptr ? definition->name.c_str() : "This Item");
     ImGui::TextDisabled("This removes it from the character's inventory.");
     controls::space(controls::kRowSpacing);
     if (controls::primary_button("Remove", {pixels(kConfirmButtonWidth), 0.0F})) {
@@ -384,7 +378,7 @@ void draw_inspector() noexcept {
     Model& state = model();
     const edit::CatalogItem* definition = state.catalog.find(state.selection.definitionHash);
     if (definition == nullptr) {
-        ImGui::TextDisabled("No item selected");
+        ImGui::TextDisabled("No Item Selected");
         return;
     }
     draw_pane_header(selected_item());

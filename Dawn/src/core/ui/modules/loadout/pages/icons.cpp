@@ -49,7 +49,7 @@ constexpr float kPagerGap = 10.0F;
 /** Title of the icon viewer, used both to open it and to submit it. */
 constexpr const char* kViewerTitle = "Icon";
 /** Shown when the filter is off, which is how the browser opens. */
-constexpr const char* kAllPackagesLabel = "All packages";
+constexpr const char* kAllPackagesLabel = "All Packages";
 /** The viewer's well: its height, the margin inside it, and how far a small icon is enlarged. */
 constexpr float kWellHeight = 230.0F;
 constexpr float kWellMargin = 10.0F;
@@ -67,7 +67,7 @@ constexpr float kFooterLines = 2.2F;
 constexpr float kCloseWidth = 100.0F;
 constexpr float kFooterGap = 16.0F;
 /** Ammunition classes in `Catalog::ammoIconTags` order; index zero is never drawn. */
-constexpr const char* kAmmoNames[]{"", "Primary ammunition", "Special ammunition", "Heavy ammunition"};
+constexpr const char* kAmmoNames[]{"", "Primary Ammunition", "Special Ammunition", "Heavy Ammunition"};
 
 /** One thing that uses an icon, as the viewer lists it. */
 struct Reference {
@@ -103,7 +103,7 @@ struct Reference {
             found.push_back({nullptr,
                              owner.name,
                              (owner.type.empty() ? std::string("Item") : owner.type)
-                                 + "  /  not in the catalog",
+                                 + "  /  Not in the Catalog",
                              owner.hash});
         }
     }
@@ -114,7 +114,7 @@ struct Reference {
         const auto name = catalog.statNames.find(row);
         found.push_back({nullptr,
                          name != catalog.statNames.end() ? name->second
-                                                         : "Stat row " + std::to_string(row),
+                                                         : "Stat Row " + std::to_string(row),
                          "Stat",
                          0});
     }
@@ -297,7 +297,7 @@ void draw_package_filter() noexcept {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(pixels(kFindWidth));
     if (ImGui::InputTextWithHint("##find",
-                                 "Find a tag or row",
+                                 "Find a Tag or Row",
                                  state.iconFind,
                                  sizeof state.iconFind,
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -305,7 +305,7 @@ void draw_package_filter() noexcept {
     }
     if (state.iconFindMissed) {
         ImGui::SameLine();
-        ImGui::TextColored(tooltip::pending(), "Not in this list");
+        ImGui::TextColored(tooltip::pending(), "Not in This List");
     }
 
     char pageLine[kLabelCapacity]{};
@@ -358,7 +358,7 @@ void draw_tile_tooltip(const edit::IconRow& icon) noexcept {
         ImGui::TextUnformatted(references.front().name.c_str());
     }
     if (icon.row != edit::kNoIconRow) {
-        ImGui::TextColored(tooltip::muted(), "0x%08X  /  row %u", icon.tag, icon.row);
+        ImGui::TextColored(tooltip::muted(), "0x%08X  /  Row %u", icon.tag, icon.row);
     } else {
         ImGui::TextColored(tooltip::muted(), "0x%08X", icon.tag);
     }
@@ -523,7 +523,7 @@ void draw_viewer_footer(const edit::IconRow& icon) noexcept {
         by = 1;
     }
     ImGui::SameLine(0.0F, pixels(kFooterGap));
-    if (ImGui::Button("Copy tag")) {
+    if (ImGui::Button("Copy Tag")) {
         char text[kLabelCapacity]{};
         (void)std::snprintf(text, sizeof text, "0x%08X", icon.tag);
         ImGui::SetClipboardText(text);
@@ -539,7 +539,7 @@ void draw_viewer_footer(const edit::IconRow& icon) noexcept {
             state.iconNote = "Exporting...";
             state.iconNoteFailed = false;
         } else {
-            state.iconNote = "The export could not start.";
+            state.iconNote = "Export failed.";
             state.iconNoteFailed = true;
         }
     }
@@ -589,7 +589,7 @@ void draw_viewer() noexcept {
     } else {
         (void)std::snprintf(line, sizeof line, "0x%08X  /  %s", icon.tag, package);
     }
-    const std::string title = references.empty()               ? std::string("Unreferenced icon")
+    const std::string title = references.empty()               ? std::string("Unreferenced Icon")
                               : references.front().name.empty() ? std::string("Unnamed")
                                                                 : references.front().name;
     tooltip::draw_sheet_head(title, line);
@@ -608,7 +608,7 @@ void draw_viewer() noexcept {
                               {width - (margin * 2.0F), well - (margin * 2.0F)},
                               pixels(1.0F),
                               kWellEnlargement)) {
-        const char* waiting = preview::unavailable(icon.tag) ? "No artwork in this container" : "Loading";
+        const char* waiting = preview::unavailable(icon.tag) ? "No Artwork in This Container" : "Loading";
         const ImVec2 size = ImGui::CalcTextSize(waiting);
         draw->AddText({at.x + ((width - size.x) * 0.5F), at.y + ((well - size.y) * 0.5F)},
                       ImGui::GetColorU32(tooltip::muted()),
@@ -644,13 +644,12 @@ void draw_viewer() noexcept {
             controls::space(controls::kRowSpacing);
             ImGui::PushTextWrapPos(controls::kAutomaticWrapPosition);
             ImGui::TextColored(tooltip::muted(),
-                               "No item, perk, stat or ammunition mark the editor reads uses this icon.");
+                               "Nothing in the catalog uses this icon.");
             ImGui::TextColored(tooltip::muted(),
                                "%s",
                                icon.row != edit::kNoIconRow
-                                   ? "It is in the investment icon table, which definitions the "
-                                     "editor does not read also index."
-                                   : "It is not in the investment icon table.");
+                                   ? "Listed in the investment icon table."
+                                   : "Not in the investment icon table.");
             ImGui::PopTextWrapPos();
         }
         for (std::size_t i = 0; i < references.size(); ++i) {

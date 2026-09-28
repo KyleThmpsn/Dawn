@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <unordered_map>
+#include <vector>
 
 namespace dawn::state::editor {
 namespace inv = account::inventory;
@@ -79,7 +81,7 @@ bool equip_character(CharacterState& character, const Catalog& catalog, std::uin
         const auto* definition = catalog.find(source.definitionHash);
         if (!definition || definition->slot >= inv::kEquipmentSlotCount || source.postmaster
             || !fits_class(*definition, character.characterClass)) { error = "This item cannot be equipped by this character."; return false; }
-        if (exotic_conflict(character, *definition, catalog)) { error = "Only one exotic weapon and one exotic armor piece can be equipped."; return false; }
+        if (exotic_conflict(character, *definition, catalog)) { error = "Only one Exotic weapon and one Exotic armor piece can be equipped."; return false; }
         auto& target = character.equipment.slots[definition->slot];
         if (target) {
             std::swap(*target, source);
@@ -141,6 +143,13 @@ Stats item_stats(const Item& item, const Catalog& catalog) {
         if (resolved.sockets.plugs[i]) if (const auto* plug = catalog.find(*resolved.sockets.plugs[i])) sum(result, contribution(*plug, catalog));
     return result;
 }
+Stats shown_stats(const Item& item, const Catalog& catalog) {
+    Stats values = item_stats(item, catalog);
+    const auto* definition = catalog.find(item.definitionHash);
+    const std::uint16_t group = definition ? definition->statGroupIndex : kNoStatGroup;
+    for (std::size_t i = 0; i < values.size(); ++i) values[i] = display_stat(catalog, group, catalog.statRows[i], values[i]);
+    return values;
+}
 /**
  * Armor 2.0 rolls its stats through two pairs of allocation sockets: two carrying a spread over
  * the top three stats (Mobility, Resilience, Recovery) and two over the bottom three. These are
@@ -199,6 +208,32 @@ std::vector<std::uint16_t> stat_choices(const CatalogItem& definition, std::size
             && nonzero(contribution(*choice, catalog))) choices.push_back(id);
     }
     return choices;
+}
+Stats plug_stats(const CatalogItem& plug, const Catalog& catalog) {
+    return contribution(plug, catalog);
+}
+std::vector<std::uint16_t> stat_plug_choices(const CatalogItem& definition, std::size_t lane, const CatalogItem* current, const Catalog& catalog) {
+    if (current != nullptr) return stat_choices(definition, lane, *current, catalog);
+    // An empty allocation lane has no plug to take a category from, so it draws on every allocation
+    // plug its group rolls, as Sundial offers an empty socket its whole pool.
+    std::vector<std::uint16_t> choices;
+    const Allocation group = lane < definition.detail.socketTypes.size()
+        ? allocation_of_socket(definition.detail.socketTypes[lane]) : Allocation::none;
+    if (group == Allocation::none) return choices;
+    for (auto type : group == Allocation::top ? kTopAllocationSocketTypes : kBottomAllocationSocketTypes) {
+        const auto pool = catalog.socketPools.find(type);
+        if (pool == catalog.socketPools.end()) continue;
+        for (auto id : pool->second) {
+            const auto* choice = catalog.index(id);
+            if (choice && allocation_plug(*choice, catalog, group)) choices.push_back(id);
+        }
+    }
+    std::sort(choices.begin(), choices.end());
+    choices.erase(std::unique(choices.begin(), choices.end()), choices.end());
+    return choices;
+}
+bool allocation_lane(const CatalogItem& definition, std::size_t lane) noexcept {
+    return lane < definition.detail.socketTypes.size() && allocation_of_socket(definition.detail.socketTypes[lane]) != Allocation::none;
 }
 bool adjustable_stats(const Item& item, const Catalog& catalog) {
     const auto* definition = catalog.find(item.definitionHash);
@@ -320,16 +355,16 @@ bool pull_from_postmaster(Draft& draft, const Catalog& catalog, std::size_t char
     for (std::size_t i = 0; i < character.inventory.count; ++i) {
         auto& item = character.inventory.values[i];
         if (item.instanceSoid != id) continue;
-        if (!item.postmaster) { error = "This item is not at the postmaster."; return false; }
+        if (!item.postmaster) { error = "This item is not at the Postmaster."; return false; }
         const auto* definition = catalog.find(item.definitionHash);
         build_data::inventory::buckets::Descriptor bucket{};
         if (!definition || !build_data::find_inventory_bucket_descriptor(definition->definition.bucketId, bucket)) { error = "This item is missing from the installed build."; return false; }
-        if (bucket.arraySelector != build_data::inventory::buckets::ArraySelector::character) { error = "This is an account item. Collect it from the postmaster in game."; return false; }
+        if (bucket.arraySelector != build_data::inventory::buckets::ArraySelector::character) { error = "This is an account item. Collect it from the Postmaster in game."; return false; }
         // A postmaster row counts against the postmaster, so its own bucket is measured without it.
         if (!inv::has_room(character, definition->definition.bucketId)) { error = "Its inventory slot is full. Free a space before pulling it."; return false; }
         auto pulled = item; pulled.postmaster = false;
         if (!bump(character, pulled)) { error = "Item revision limit reached."; return false; }
-        item = pulled; draft.dirty = true; error = "Pulled from the postmaster."; return true;
+        item = pulled; draft.dirty = true; error = "Pulled from the Postmaster."; return true;
     }
     error = "This item is no longer on this character."; return false;
 }
@@ -341,7 +376,7 @@ bool transfer(Draft& draft, const Catalog& catalog, std::size_t from, std::size_
     for (std::size_t i = 0; i < source.inventory.count; ++i) {
         const auto item = source.inventory.values[i];
         if (item.instanceSoid != id) continue;
-        if (item.postmaster) { error = "Pull it from the postmaster before sending it."; return false; }
+        if (item.postmaster) { error = "Pull it from the Postmaster before sending it."; return false; }
         const auto* definition = catalog.find(item.definitionHash);
         if (!definition) { error = "This item is missing from the installed build."; return false; }
         if (!fits_class(*definition, target.characterClass)) { error = "That character's class cannot hold this item."; return false; }
@@ -376,6 +411,50 @@ PieceState piece_state(const CharacterState& character, const Catalog& catalog, 
     }
     return PieceState::missing;
 }
+namespace {
+/**
+ * @return The plug one lane of a held item would take back from its saved piece, or null when the lane
+ * keeps what it holds: it was saved empty, it holds the saved plug already, or the plug has left the
+ * build. Any plug the build carries fits any lane at the widest scope, which is the one used here.
+ * @param resolved The held item with its sockets materialized.
+ */
+const CatalogItem* saved_plug(const Item& resolved, const Catalog& catalog, const SavedPiece& piece, std::size_t lane) {
+    if (lane >= piece.plugs.size() || lane >= resolved.sockets.plugCount || piece.plugs[lane] == 0
+        || resolved.sockets.plugs[lane] == piece.plugs[lane]) return nullptr;
+    const CatalogItem* plug = catalog.find(piece.plugs[lane]);
+    return plug != nullptr && plug->plug ? plug : nullptr;
+}
+/** Fits each saved plug the build still carries back into one held item. @return How many lanes changed. */
+std::size_t refit(Item& item, const Catalog& catalog, const SavedPiece& piece) {
+    Item resolved = item;
+    if (piece.plugs.empty() || item.definitionHash != piece.definition || !materialize(resolved, catalog)) return 0;
+    std::size_t changed = 0;
+    for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane)
+        if (const CatalogItem* plug = saved_plug(resolved, catalog, piece, lane))
+            changed += set_plug(item, catalog, lane, plug->definition.definitionIndex, PlugScope::all) ? 1U : 0U;
+    return changed;
+}
+}
+std::size_t refit_count(const Item& item, const Catalog& catalog, const SavedPiece& piece) noexcept {
+    Item resolved = item;
+    if (piece.plugs.empty() || item.definitionHash != piece.definition || !materialize(resolved, catalog)) return 0;
+    std::size_t count = 0;
+    for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane) count += saved_plug(resolved, catalog, piece, lane) ? 1U : 0U;
+    return count;
+}
+bool abilities_differ(const CharacterState& character, const Catalog& catalog, const SavedLoadout& loadout) noexcept {
+    const SavedPiece& saved = loadout.pieces[kSubclassSlot];
+    const auto& slot = character.equipment.slots[kSubclassSlot];
+    if (saved.instance == 0 || !slot || slot->instanceSoid != saved.instance || slot->definitionHash != saved.definition) return false;
+    const CatalogItem* subclass = catalog.find(slot->definitionHash);
+    for (std::size_t lane = 0; subclass && lane < kAbilityFields.size(); ++lane)
+        for (const auto& choice : subclass->abilities[lane])
+            if (choice.entry == loadout.abilities[lane]) {
+                if (character.*kAbilityFields[lane] != choice.entry) return true;
+                break;
+            }
+    return false;
+}
 SavedLoadout capture_loadout(const CharacterState& character, const Catalog& catalog, std::string name) {
     SavedLoadout loadout; loadout.character = character.soid; loadout.name = std::move(name);
     for (std::size_t slot = 0; slot < loadout.pieces.size(); ++slot) {
@@ -405,13 +484,8 @@ std::uint64_t recreate(AccountState& account, CharacterState& character, const C
         || bucket.arraySelector != build_data::inventory::buckets::ArraySelector::character
         || character.inventory.count >= character.inventory.values.size() || !inv::has_room(character, bucket.bucketId)) return 0;
     Item item; item.definitionHash = piece.definition; item.level = std::clamp(level, 0, kMaximumItemLevel); item.quantity = 1;
-    if (!piece.plugs.empty() && materialize(item, catalog)) {
-        for (std::size_t lane = 0; lane < piece.plugs.size() && lane < item.sockets.plugCount; ++lane) {
-            const CatalogItem* plug = piece.plugs[lane] != 0 ? catalog.find(piece.plugs[lane]) : nullptr;
-            // A plug the build no longer carries, or one the lane no longer offers, keeps the default.
-            if (plug != nullptr) (void)set_plug(item, catalog, lane, plug->definition.definitionIndex, PlugScope::all);
-        }
-    }
+    // A plug the build no longer carries keeps the lane's default.
+    if (!piece.plugs.empty() && materialize(item, catalog)) (void)refit(item, catalog, piece);
     if (!persistence::next_item_instance_soid(account, item.instanceSoid) || !bump(character, item)) return 0;
     character.inventory.values[character.inventory.count++] = item;
     return item.instanceSoid;
@@ -432,6 +506,14 @@ bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t characterIn
         if (standing == PieceState::empty) continue;
         ++result.saved;
         if (standing == PieceState::unavailable) { ++result.unavailable; continue; }
+        // A piece still held has its saved plugs fitted back in first, whether it is on now or not.
+        if (standing == PieceState::equipped || standing == PieceState::stowed) {
+            Item* held = nullptr;
+            for (auto& equipped : character.equipment.slots) if (equipped && equipped->instanceSoid == piece.instance) held = &*equipped;
+            for (std::size_t i = 0; !held && i < character.inventory.count; ++i)
+                if (character.inventory.values[i].instanceSoid == piece.instance) held = &character.inventory.values[i];
+            if (held && refit(*held, catalog, piece) != 0) { ++result.refitted; changed = true; }
+        }
         if (standing == PieceState::equipped) { ++result.equipped; continue; }
         std::uint64_t id = piece.instance;
         if (standing == PieceState::missing) {
@@ -586,6 +668,184 @@ bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& ou
     // The serial repairs above can only have made the image less valid, and a refusal that says
     // nothing leaves the action bar showing the outcome of the apply before this one.
     if (!account::valid(output)) { error = "The draft contains an invalid character or inventory value."; return false; }
+    return true;
+}
+namespace {
+using inv::ProfileItem;
+/** @return True when two items are the same but for the revision the game numbers each change with. */
+bool same_but_revision(const Item& a, const Item& b) {
+    Item copy = a;
+    copy.mutationSerial = b.mutationSerial;
+    return copy == b;
+}
+/** @return True when two images of one character agree on everything the editor edits, revisions aside. */
+bool same_edits(const CharacterState& a, const CharacterState& b) {
+    if (a.race != b.race || a.gender != b.gender || a.characterClass != b.characterClass || a.level != b.level
+        || a.inventory.count != b.inventory.count) return false;
+    for (const auto field : kAbilityFields) if (a.*field != b.*field) return false;
+    for (std::size_t slot = 0; slot < a.equipment.slots.size(); ++slot) {
+        const auto& left = a.equipment.slots[slot];
+        const auto& right = b.equipment.slots[slot];
+        if (left.has_value() != right.has_value() || (left && !same_but_revision(*left, *right))) return false;
+    }
+    for (std::size_t i = 0; i < a.inventory.count; ++i)
+        if (!same_but_revision(a.inventory.values[i], b.inventory.values[i])) return false;
+    return true;
+}
+/** @return True when two runs of account stacks agree, revisions aside. */
+bool same_stacks(const ProfileItem* a, std::size_t aCount, const ProfileItem* b, std::size_t bCount) {
+    if (aCount != bCount) return false;
+    for (std::size_t i = 0; i < aCount; ++i)
+        if (a[i].instanceSoid != b[i].instanceSoid || a[i].definitionHash != b[i].definitionHash || a[i].quantity != b[i].quantity) return false;
+    return true;
+}
+/** Copies what the editor edits from one image of a character over another, and nothing else. */
+void take_edits(CharacterState& into, const CharacterState& from) {
+    into.race = from.race; into.gender = from.gender; into.characterClass = from.characterClass; into.level = from.level;
+    for (const auto field : kAbilityFields) into.*field = from.*field;
+    into.equipment = from.equipment;
+    into.inventory = from.inventory;
+}
+/** @return The item with this id where one image of a character keeps it, or null. `slot` is the equipment slot, or -1 when stowed. */
+const Item* find_held(const CharacterState& character, std::uint64_t id, int& slot) {
+    for (std::size_t s = 0; s < character.equipment.slots.size(); ++s)
+        if (character.equipment.slots[s] && character.equipment.slots[s]->instanceSoid == id) { slot = static_cast<int>(s); return &*character.equipment.slots[s]; }
+    for (std::size_t i = 0; i < character.inventory.count; ++i)
+        if (character.inventory.values[i].instanceSoid == id) { slot = -1; return &character.inventory.values[i]; }
+    return nullptr;
+}
+/** Highest revision each instance id is held at, across every character of an account. */
+using Revisions = std::unordered_map<std::uint64_t, std::int32_t>;
+void note_revisions(const AccountState& account, Revisions& revisions) {
+    const auto note = [&revisions](const Item& item) {
+        const auto [at, added] = revisions.try_emplace(item.instanceSoid, item.mutationSerial);
+        if (!added) at->second = (std::max)(at->second, item.mutationSerial);
+    };
+    for (std::size_t c = 0; c < account.characterCount; ++c) {
+        const auto& character = account.characters[c];
+        for (const auto& item : character.equipment.slots) if (item) note(*item);
+        for (std::size_t i = 0; i < character.inventory.count; ++i) note(character.inventory.values[i]);
+    }
+}
+/** @return How many instance ids an account holds more than once: character items, and stacks that carry an id. */
+std::size_t repeated_ids(const AccountState& account) {
+    std::vector<std::uint64_t> ids;
+    for (std::size_t c = 0; c < account.characterCount; ++c) {
+        const auto& character = account.characters[c];
+        for (const auto& item : character.equipment.slots) if (item) ids.push_back(item->instanceSoid);
+        for (std::size_t i = 0; i < character.inventory.count; ++i) ids.push_back(character.inventory.values[i].instanceSoid);
+    }
+    for (std::size_t i = 0; i < account.profileItemCount; ++i) if (account.profileItems[i].instanceSoid != 0) ids.push_back(account.profileItems[i].instanceSoid);
+    std::sort(ids.begin(), ids.end());
+    std::size_t repeated = 0;
+    for (std::size_t i = 1; i < ids.size(); ++i) repeated += ids[i] == ids[i - 1] ? 1U : 0U;
+    return repeated;
+}
+/**
+ * Numbers every piece a retrace put back. A piece standing where it stood, as it stood, keeps the
+ * revision it has; one the game holds exactly so keeps that one; anything else takes a new revision
+ * from the counter, as every other edit gives one, so a piece's revision only ever rises.
+ * @param was The character as it stood before the retrace.
+ * @param committed The character as the game holds it, or null when the game holds none.
+ * @param revisions Highest revision each piece is held at anywhere on the account, in the draft or
+ * the game. A piece that went to another character took a revision there, so the counter is lifted
+ * past it before the piece takes a new one, as a transfer lifts it.
+ */
+bool renumber(CharacterState& character, const CharacterState& was, const CharacterState* committed, const Revisions& revisions) {
+    const auto settle = [&](Item& item, int place) {
+        int slot = 0;
+        if (const Item* previous = find_held(was, item.instanceSoid, slot); previous && slot == place && same_but_revision(item, *previous)) {
+            item.mutationSerial = previous->mutationSerial;
+            return true;
+        }
+        if (committed) if (const Item* held = find_held(*committed, item.instanceSoid, slot); held && slot == place && item == *held) return true;
+        std::int32_t floor = item.mutationSerial;
+        if (const auto known = revisions.find(item.instanceSoid); known != revisions.end()) floor = (std::max)(floor, known->second);
+        if (floor >= 0 && character.nextInventorySerial <= static_cast<std::uint32_t>(floor)) character.nextInventorySerial = static_cast<std::uint32_t>(floor) + 1U;
+        return bump(character, item);
+    };
+    for (std::size_t slot = 0; slot < character.equipment.slots.size(); ++slot)
+        if (character.equipment.slots[slot] && !settle(*character.equipment.slots[slot], static_cast<int>(slot))) return false;
+    for (std::size_t i = 0; i < character.inventory.count; ++i)
+        if (!settle(character.inventory.values[i], -1)) return false;
+    // Back where the game has it, the character takes back the counter the game has too.
+    if (committed) {
+        const auto next = character.nextInventorySerial;
+        character.nextInventorySerial = committed->nextInventorySerial;
+        if (!(character == *committed)) character.nextInventorySerial = next;
+    }
+    return true;
+}
+}
+bool capture_step(const AccountState& before, const AccountState& after, EditStep& step) {
+    step = {};
+    if (before.characterCount != after.characterCount) return false;
+    for (std::size_t c = 0; c < after.characterCount; ++c) {
+        if (before.characters[c].soid != after.characters[c].soid) { step = {}; return false; }
+        if (!same_edits(before.characters[c], after.characters[c]))
+            step.characters.push_back({after.characters[c].soid, before.characters[c], after.characters[c]});
+    }
+    if (!same_stacks(before.profileItems.data(), before.profileItemCount, after.profileItems.data(), after.profileItemCount)) {
+        step.stacks = true;
+        step.stacksBefore.assign(before.profileItems.begin(), before.profileItems.begin() + static_cast<std::ptrdiff_t>(before.profileItemCount));
+        step.stacksAfter.assign(after.profileItems.begin(), after.profileItems.begin() + static_cast<std::ptrdiff_t>(after.profileItemCount));
+    }
+    return !step.characters.empty() || step.stacks;
+}
+bool retrace(Draft& draft, const EditStep& step, bool forward, std::string& error) {
+    auto staged = std::make_unique<AccountState>(draft.after);
+    auto was = std::make_unique<CharacterState>();
+    Revisions revisions;
+    note_revisions(draft.after, revisions);
+    note_revisions(draft.before, revisions);
+    for (const auto& change : step.characters) {
+        const CharacterState& from = forward ? change.before : change.after;
+        const CharacterState& to = forward ? change.after : change.before;
+        CharacterState* current = nullptr;
+        for (std::size_t c = 0; c < staged->characterCount; ++c) if (staged->characters[c].soid == change.soid) current = &staged->characters[c];
+        if (!current) { error = "That character is no longer on this account."; return false; }
+        if (!same_edits(*current, from)) {
+            error = forward ? "Can't redo: that character changed."
+                            : "Can't undo: that character changed.";
+            return false;
+        }
+        *was = *current;
+        take_edits(*current, to);
+        const CharacterState* committed = nullptr;
+        for (std::size_t c = 0; c < draft.before.characterCount; ++c) if (draft.before.characters[c].soid == change.soid) committed = &draft.before.characters[c];
+        if (!renumber(*current, *was, committed, revisions)) { error = "Item revision limit reached."; return false; }
+    }
+    if (step.stacks) {
+        const auto& from = forward ? step.stacksBefore : step.stacksAfter;
+        const auto& to = forward ? step.stacksAfter : step.stacksBefore;
+        if (to.size() > staged->profileItems.size()
+            || !same_stacks(staged->profileItems.data(), staged->profileItemCount, from.data(), from.size())) {
+            error = forward ? "Can't redo: the account items changed."
+                            : "Can't undo: the account items changed.";
+            return false;
+        }
+        const std::vector<ProfileItem> previous(staged->profileItems.begin(), staged->profileItems.begin() + static_cast<std::ptrdiff_t>(staged->profileItemCount));
+        staged->profileItems.fill({});
+        std::copy(to.begin(), to.end(), staged->profileItems.begin());
+        staged->profileItemCount = to.size();
+        // A stack still there keeps at least the revision it has now; the commit raises one that changed.
+        for (std::size_t i = 0; i < staged->profileItemCount; ++i) {
+            auto& stack = staged->profileItems[i];
+            for (const auto& held : previous)
+                if (held.instanceSoid == stack.instanceSoid && held.definitionHash == stack.definitionHash) {
+                    stack.mutationSerial = (std::max)(stack.mutationSerial, held.mutationSerial);
+                    break;
+                }
+        }
+    }
+    // A piece put back keeps the id it had, which the account may since have given to something new.
+    if (repeated_ids(*staged) > repeated_ids(draft.after)) {
+        error = forward ? "Can't redo: an item's id is now taken."
+                        : "Can't undo: an item's id is now taken.";
+        return false;
+    }
+    draft.after = *staged;
+    draft.dirty = !(draft.after == draft.before);
     return true;
 }
 }

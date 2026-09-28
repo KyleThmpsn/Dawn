@@ -36,6 +36,22 @@ inline constexpr float kAutomaticWrapPosition = 0.0F;
 inline constexpr float kHeadingScale = 1.35F;
 /** An item name inside a pane, which sits between the heading and the body. */
 inline constexpr float kSubheadingScale = 1.15F;
+/** Colour of an outcome the game or the editor refused, and of an action that cannot be taken back. */
+inline constexpr ImVec4 kRefusedColor{0.94F, 0.48F, 0.42F, 1.0F};
+/** Colour of a value waiting on the game, such as unapplied edits or a target a roll has not reached. */
+inline constexpr ImVec4 kPendingColor{0.88F, 0.76F, 0.47F, 1.0F};
+/**
+ * Width of every rail and mark the editor draws beside or under something to say what it is: the
+ * rail beside a chosen row, under an open tab or the character in play, and a chosen card's outline.
+ */
+inline constexpr float kRailWidth = 2.0F;
+/** Gap that sets one group of controls on a row apart from the next, wider than the gap inside one. */
+inline constexpr float kGroupGap = 14.0F;
+/**
+ * Height of the actions a pane or a sheet is for, such as adding an item or equipping a loadout: a
+ * target above the 24 pixels a pointer needs, set apart from the page's shorter field controls.
+ */
+inline constexpr float kActionHeight = 28.0F;
 
 /**
  * Adds vertical space without the surrounding item spacing doubling it.

@@ -175,6 +175,18 @@ struct Catalog {
                                         std::int32_t investment) noexcept;
 
 /**
+ * Converts one stored stat value through one curve, for work that holds its own copy of the curve
+ * rather than the catalog, as the armor planner's worker does.
+ * @param scaled Curve that scales the stat, or null when its group does not.
+ * @param investment Stored value.
+ * @return The displayed value, or the stored value when no curve covers it.
+ */
+[[nodiscard]] std::int32_t display_stat(const ScaledStat* scaled, std::int32_t investment) noexcept;
+
+/** @return The curve for one stat row inside a group, or null when the group does not scale it. */
+[[nodiscard]] const ScaledStat* scaled_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow) noexcept;
+
+/**
  * @return True when the game shows this stat as a number rather than a bar, as its group says.
  * @param catalog Loaded catalog holding the stat groups.
  * @param groupIndex Group the item names, or `kNoStatGroup`.

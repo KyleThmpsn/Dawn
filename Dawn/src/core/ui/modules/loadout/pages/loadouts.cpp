@@ -3,8 +3,10 @@
 #include <array>
 #include <cstdio>
 #include <imgui.h>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "../../../scaling/dpi/ui_dpi_scaling.h"
 #include "../art.h"
@@ -20,51 +22,128 @@ using scaling::dpi::pixels;
 namespace inv = state::account::inventory;
 
 /** Popup id of the sheet, used by both the action that opens it and the sheet itself. */
-constexpr const char* kLoadoutsTitle = "Saved loadouts";
+constexpr const char* kLoadoutsTitle = "Saved Loadouts";
+/** Id of the menu the Copy To action opens, and the payload a row carries while it is dragged. */
+constexpr const char* kCopyMenu = "copy_to";
+constexpr const char* kRowPayload = "DAWN_LOADOUT_ROW";
 /**
  * One loadout row, laid out as the game previews a loadout: the subclass stands as its emblem,
  * the name in the title cut beside it, and under the name the pieces it puts on, weapons then
- * armor, each framed in its rarity as the cards frame them.
+ * armor, each framed in its rarity as the cards frame them. Every row is the same height, so
+ * choosing one never moves another under the pointer.
  */
-constexpr float kRowPadding = 7.0F;
+constexpr float kRowPadding = 8.0F;
 constexpr float kEmblemExtent = 46.0F;
-constexpr float kEmblemGap = 10.0F;
+constexpr float kEmblemGap = 12.0F;
 constexpr float kPieceExtent = 24.0F;
 constexpr float kPieceGap = 3.0F;
 constexpr float kPieceGroupGap = 10.0F;
 constexpr float kLineGap = 5.0F;
-/** Gap between the row's two quiet actions, and between the count and the row's word. */
-constexpr float kActionGap = 6.0F;
+/** Gap between two words set on the name line's far end. */
 constexpr float kWordGap = 10.0F;
+/**
+ * The strip under the list, which holds the chosen loadout's armor totals and its actions in one
+ * place whichever row is chosen: its name's share of the first line, the gap after the name, and
+ * the gap over the actions.
+ */
+constexpr float kStripNameShare = 0.45F;
+constexpr float kStripNameGap = 16.0F;
+constexpr float kDetailGap = 8.0F;
+constexpr float kActionGap = 6.0F;
+/**
+ * A button asking to be pressed again is filled with the colour its action deserves at these
+ * strengths, at rest, under the pointer and pressed, with its label left in full. Coloured text on a
+ * lit button fell to 2.3:1 while pressed; full text on the tint stays above 5:1 in every state.
+ */
+constexpr float kAskingFill = 0.22F;
+constexpr float kAskingFillHovered = 0.32F;
+constexpr float kAskingFillActive = 0.42F;
 /** A piece no longer available is veiled rather than left out, so the loadout still reads whole. */
 constexpr ImVec4 kUnavailableVeil{0.0F, 0.0F, 0.0F, 0.62F};
-/** The row's own word, set as a perk row sets its own: what pressing it does, or that it is done. */
-constexpr const char* kEquipWord = "Equip";
-constexpr const char* kEquippedWord = "Equipped";
-/** The row's two quiet actions. Delete asks again, in place, before it deletes. */
-constexpr const char* kUpdateLabel = "Update";
+/** The chosen loadout's actions. Save Over and Delete each ask again, in place, before they act. */
+constexpr const char* kEquipLabel = "Equip";
+constexpr const char* kEquippedLabel = "Equipped";
+constexpr const char* kSaveOverLabel = "Save Over";
+constexpr const char* kSaveConfirmLabel = "Confirm Save";
+constexpr const char* kRenameLabel = "Rename";
+constexpr const char* kCopyLabel = "Copy To";
 constexpr const char* kDeleteLabel = "Delete";
-constexpr const char* kConfirmLabel = "Confirm";
-/** Footer: the save action, the gap it keeps from the close, and the close the sheet ends on. */
-constexpr float kSaveWidth = 140.0F;
+constexpr const char* kDeleteConfirmLabel = "Confirm Delete";
+/** What each action does, under the pointer. */
+constexpr const char* kEquipTip = "Double-click or Enter also equips.";
+constexpr const char* kInPlaceTip = "This loadout is already on.";
+constexpr const char* kSaveOverTip = "Replace with what's equipped now.";
+constexpr const char* kSaveConfirmTip = "Click again to confirm.";
+constexpr const char* kRenameTip = "Shortcut: F2.";
+constexpr const char* kCopyTip = "Copy to another character of this class.";
+constexpr const char* kDeleteTip = "Delete this loadout.";
+constexpr const char* kDeleteConfirmTip = "Click again to confirm.";
+/** Said in the strip while no loadout is chosen. */
+constexpr const char* kChooseHint = "Select a loadout to equip, rename or delete it.";
+/** The row's own words, set in muted capitals at the far end of its name line. */
+constexpr const char* kInPlaceWord = "Equipped";
+constexpr const char* kPastWord = "From a Deleted Character";
+/** Footer: the name field, the save that uses it, and the close the sheet ends on. */
+constexpr const char* kNameHint = "Name for a New Loadout";
+constexpr const char* kSaveLabel = "Save as New";
+constexpr const char* kSaveTip = "Save what's equipped as a new loadout.";
+constexpr float kSaveWidth = 120.0F;
 constexpr float kFooterGap = 16.0F;
 constexpr float kCloseWidth = 100.0F;
-/** Height the list leaves under it for the footer, in lines, as the perk picker leaves its own. */
-constexpr float kFooterLines = 1.6F;
+/** Item gaps the space under the list is measured with, beyond the lines and rules it holds. */
+constexpr float kFooterGaps = 6.0F;
 /** 192 bytes hold any outcome the sheet reports, with a loadout name of the longest kind. */
 constexpr std::size_t kMessageCapacity = 192;
-/** 64 bytes hold the head's muted line or the count over the list. */
-constexpr std::size_t kLineCapacity = 64;
+/** 96 bytes hold the head's muted line or a row's status word. */
+constexpr std::size_t kLineCapacity = 96;
 /** Said when the file is there but could not be read, which is why nothing is saved over it. */
 constexpr const char* kUnreadable =
-    "The loadouts file could not be read, so nothing is saved over it.";
+    "Can't read Dawn/loadouts.json. Saving is off.";
 /** Said when the file could not be written. */
 constexpr const char* kUnwritable = "Could not write the loadouts file.";
 /** Said in place of the list while this character has saved nothing. */
-constexpr const char* kEmpty = "No saved loadouts yet. Save what is equipped with the field below.";
+constexpr const char* kEmpty = "No saved loadouts yet.";
+constexpr const char* kEmptyHint = "Name your gear below, then Save as New.";
 
-/** What was pressed on one row this frame. */
-enum class RowPress : std::uint8_t { none, equip, update, remove };
+/** Where one saved loadout comes from, as the sheet for the character being edited sees it. */
+enum class Origin : std::uint8_t {
+    /** Another character's, which this sheet does not offer. */
+    none,
+    /** This character's own. */
+    own,
+    /**
+     * Saved by a character no longer on the account, and for this one's class. It would otherwise
+     * never be offered again, so it is offered here, and becomes this character's once it is used.
+     */
+    past,
+};
+
+/** What was pressed for one loadout this frame. */
+enum class RowAction : std::uint8_t { none, choose, equip, saveOver, rename, remove, copy };
+
+/** One press, and the character a copy goes to. */
+struct Press {
+    RowAction action{RowAction::none};
+    std::size_t target{};
+};
+
+/** Where every piece of one loadout stands on this character, and what equipping it would do. */
+struct Preview {
+    std::array<edit::PieceState, inv::kEquipmentSlotCount> standing{};
+    std::size_t equipped{};
+    std::size_t stowed{};
+    std::size_t missing{};
+    std::size_t unavailable{};
+    /** Held pieces whose saved plugs differ from the ones fitted now. */
+    std::size_t refits{};
+    /** True when the saved abilities differ from the ones chosen now. */
+    bool abilities{};
+
+    /** @return True when equipping the loadout would change nothing. */
+    [[nodiscard]] bool in_place() const noexcept {
+        return equipped != 0 && stowed == 0 && missing == 0 && refits == 0 && !abilities;
+    }
+};
 
 /** Reads the saved loadouts the first time the sheet needs them. */
 void ensure_loaded() noexcept {
@@ -76,7 +155,7 @@ void ensure_loaded() noexcept {
     loadouts.writable = presets::load(loadouts.entries);
 }
 
-/** Sets the bar's outcome line for a sheet action that reaches no game, so nothing overwrites it. */
+/** Sets the outcome line for a sheet action that reaches no game, so nothing overwrites it. */
 void report(const char* text, bool failed) noexcept {
     Model& state = model();
     state.status = text;
@@ -97,74 +176,270 @@ void report(const char* text, bool failed) noexcept {
     return true;
 }
 
-/** @return How many loadouts one character has saved. */
-[[nodiscard]] std::size_t saved_by(std::uint64_t owner) noexcept {
+/** @return The class a loadout is for: the first piece only one class can hold says so. */
+[[nodiscard]] std::optional<std::uint8_t> loadout_class(const edit::SavedLoadout& entry) noexcept {
+    for (const edit::SavedPiece& piece : entry.pieces) {
+        const edit::CatalogItem* definition =
+            piece.instance != 0 ? model().catalog.find(piece.definition) : nullptr;
+        if (definition != nullptr && definition->characterClass < 3) {
+            return definition->characterClass;
+        }
+    }
+    return std::nullopt;
+}
+
+/** @return Where one saved loadout comes from, as this character's sheet sees it. */
+[[nodiscard]] Origin origin_of(const edit::SavedLoadout& entry) noexcept {
+    const state::CharacterState& owner = character();
+    if (entry.character == owner.soid) {
+        return Origin::own;
+    }
+    const state::AccountState& account = model().draft->after;
+    for (std::size_t c = 0; c < account.characterCount; ++c) {
+        if (account.characters[c].soid == entry.character) {
+            return Origin::none;
+        }
+    }
+    const std::optional<std::uint8_t> kind = loadout_class(entry);
+    return !kind || *kind == static_cast<std::uint8_t>(owner.characterClass) ? Origin::past : Origin::none;
+}
+
+/** @return The other characters of this character's class, which a loadout can be copied to. */
+[[nodiscard]] std::vector<std::size_t> copy_targets() noexcept {
+    const Model& state = model();
+    const state::AccountState& account = state.draft->after;
+    std::vector<std::size_t> targets;
+    for (std::size_t c = 0; c < account.characterCount; ++c) {
+        if (c != state.character && account.characters[c].characterClass == character().characterClass) {
+            targets.push_back(c);
+        }
+    }
+    return targets;
+}
+
+/** @return Where every piece of one loadout stands, read the way the equip reads it. */
+[[nodiscard]] Preview preview_of(const edit::SavedLoadout& entry) noexcept {
+    const Model& state = model();
+    const state::CharacterState& owner = character();
+    Preview preview;
+    for (std::size_t slot = 0; slot < preview.standing.size(); ++slot) {
+        const edit::SavedPiece& piece = entry.pieces[slot];
+        const edit::PieceState standing = edit::piece_state(owner, state.catalog, piece);
+        preview.standing[slot] = standing;
+        preview.equipped += standing == edit::PieceState::equipped ? 1U : 0U;
+        preview.stowed += standing == edit::PieceState::stowed ? 1U : 0U;
+        preview.missing += standing == edit::PieceState::missing ? 1U : 0U;
+        preview.unavailable += standing == edit::PieceState::unavailable ? 1U : 0U;
+        if (standing == edit::PieceState::equipped || standing == edit::PieceState::stowed) {
+            const edit::Item* held = find_owned_item(piece.instance);
+            preview.refits += held != nullptr && edit::refit_count(*held, state.catalog, piece) != 0 ? 1U : 0U;
+        }
+    }
+    preview.abilities = edit::abilities_differ(owner, state.catalog, entry);
+    return preview;
+}
+
+/** @return How many loadouts the sheet offers this character. */
+[[nodiscard]] std::size_t offered_count() noexcept {
     const Loadouts& loadouts = model().loadouts;
     return static_cast<std::size_t>(std::count_if(
-        loadouts.entries.begin(), loadouts.entries.end(), [owner](const edit::SavedLoadout& entry) {
-            return entry.character == owner;
+        loadouts.entries.begin(), loadouts.entries.end(), [](const edit::SavedLoadout& entry) {
+            return origin_of(entry) != Origin::none;
         }));
+}
+
+/** @return A typed name with the spaces around it taken off. */
+[[nodiscard]] std::string trimmed(const char* text) noexcept {
+    const std::string name = text;
+    const std::size_t first = name.find_first_not_of(" \t");
+    const std::size_t last = name.find_last_not_of(" \t");
+    return first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
+}
+
+/**
+ * Lets go of every question a row was asking and every name being typed for it. The list is about
+ * to move under them, and they are held by index, so left standing they would pass to another row.
+ */
+void let_go() noexcept {
+    Loadouts& loadouts = model().loadouts;
+    loadouts.pendingDelete = -1;
+    loadouts.pendingSave = -1;
+    loadouts.renaming = -1;
+}
+
+/**
+ * Chooses one row, and lets go of anything the row chosen before was in the middle of.
+ * @param reveal True when the choice came from something other than the pointer, so the list
+ * brings the row into view.
+ */
+void choose(int index, bool reveal = false) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    if (loadouts.chosen != index) {
+        let_go();
+    }
+    loadouts.chosen = index;
+    loadouts.reveal = reveal;
+}
+
+/**
+ * Writes a change the sheet made to the saved loadouts and keeps it for undo, or, when it cannot be
+ * written, puts the list back as it was so what the sheet shows is what the file holds.
+ * @param before The saved loadouts as they stood before the change.
+ * @return True when the change was written.
+ */
+[[nodiscard]] bool commit(std::vector<edit::SavedLoadout> before) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    if (!persist()) {
+        loadouts.entries = std::move(before);
+        return false;
+    }
+    record_loadouts_change(std::move(before));
+    return true;
+}
+
+/** A loadout from an earlier character becomes this one's once it is used, so it is kept. */
+void adopt(edit::SavedLoadout& entry) noexcept {
+    entry.character = character().soid;
 }
 
 /** Saves what the character has equipped now, under the typed name or a numbered one. */
 void save_current() noexcept {
     Loadouts& loadouts = model().loadouts;
     const state::CharacterState& owner = character();
-    std::string name = loadouts.name;
-    const std::size_t first = name.find_first_not_of(" \t");
-    const std::size_t last = name.find_last_not_of(" \t");
-    name = first == std::string::npos ? std::string() : name.substr(first, last - first + 1);
+    std::string name = trimmed(loadouts.name);
     if (name.empty()) {
-        name = "Loadout " + std::to_string(saved_by(owner.soid) + 1);
+        name = "Loadout " + std::to_string(offered_count() + 1);
     }
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
     loadouts.entries.push_back(edit::capture_loadout(owner, model().catalog, name));
-    if (!persist()) {
-        loadouts.entries.pop_back();
+    if (!commit(std::move(before))) {
         return;
     }
     loadouts.name[0] = '\0';
+    choose(static_cast<int>(loadouts.entries.size() - 1), true);
     char message[kMessageCapacity]{};
     (void)std::snprintf(message, sizeof message, "Saved %s.", name.c_str());
     report(message, false);
 }
 
 /** Replaces what one loadout holds with what is equipped now, keeping its name. */
-void update_saved(edit::SavedLoadout& entry) noexcept {
-    edit::SavedLoadout previous = entry;
-    entry = edit::capture_loadout(character(), model().catalog, previous.name);
-    if (!persist()) {
-        entry = std::move(previous);
+void save_over(std::size_t index) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
+    edit::SavedLoadout& entry = loadouts.entries[index];
+    entry = edit::capture_loadout(character(), model().catalog, entry.name);
+    if (!commit(std::move(before))) {
         return;
     }
     char message[kMessageCapacity]{};
-    (void)std::snprintf(message, sizeof message, "Updated %s.", entry.name.c_str());
+    (void)std::snprintf(message, sizeof message, "Replaced %s with what is equipped.", entry.name.c_str());
     report(message, false);
 }
 
-/** Deletes one loadout once its Delete has been confirmed. */
-void delete_saved(std::size_t index) noexcept {
+/** Starts renaming one loadout in place, with its name in the field and its row in view. */
+void start_rename(std::size_t index) noexcept {
     Loadouts& loadouts = model().loadouts;
-    const auto at = loadouts.entries.begin() + static_cast<std::ptrdiff_t>(index);
-    edit::SavedLoadout removed = std::move(*at);
-    loadouts.entries.erase(at);
-    loadouts.pendingDelete = -1;
-    if (!persist()) {
-        loadouts.entries.insert(loadouts.entries.begin() + static_cast<std::ptrdiff_t>(index),
-                                std::move(removed));
+    choose(static_cast<int>(index), true);
+    loadouts.renaming = static_cast<int>(index);
+    loadouts.focusRename = true;
+    (void)std::snprintf(loadouts.rename, sizeof loadouts.rename, "%s", loadouts.entries[index].name.c_str());
+}
+
+/** Gives one loadout the name typed for it. An empty name leaves it as it was. */
+void finish_rename(std::size_t index) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    loadouts.renaming = -1;
+    edit::SavedLoadout& entry = loadouts.entries[index];
+    const std::string name = trimmed(loadouts.rename);
+    if (name.empty() || name == entry.name) {
+        return;
+    }
+    const std::string previous = entry.name;
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
+    entry.name = name;
+    adopt(entry);
+    if (!commit(std::move(before))) {
         return;
     }
     char message[kMessageCapacity]{};
-    (void)std::snprintf(message, sizeof message, "Deleted %s.", removed.name.c_str());
+    (void)std::snprintf(message, sizeof message, "Renamed %s to %s.", previous.c_str(), name.c_str());
     report(message, false);
+}
+
+/** Deletes one loadout once its Delete has been confirmed, and chooses the row that takes its place. */
+void delete_saved(std::size_t index) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    let_go();
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
+    const std::string removed = loadouts.entries[index].name;
+    loadouts.entries.erase(loadouts.entries.begin() + static_cast<std::ptrdiff_t>(index));
+    if (!commit(std::move(before))) {
+        return;
+    }
+    // The next row this sheet offers moves up into the place, or the last one when none follows.
+    int next = -1;
+    for (std::size_t i = 0; i < loadouts.entries.size(); ++i) {
+        if (origin_of(loadouts.entries[i]) != Origin::none) {
+            next = static_cast<int>(i);
+            if (i >= index) {
+                break;
+            }
+        }
+    }
+    choose(next);
+    char message[kMessageCapacity]{};
+    (void)std::snprintf(message, sizeof message, "Deleted %s.", removed.c_str());
+    report(message, false);
+}
+
+/** Gives another character its own copy of one loadout, placed after the original. */
+void copy_saved(std::size_t index, std::size_t target) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    let_go();
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
+    edit::SavedLoadout copy = loadouts.entries[index];
+    copy.character = model().draft->after.characters[target].soid;
+    const std::string name = copy.name;
+    loadouts.entries.insert(loadouts.entries.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(copy));
+    if (!commit(std::move(before))) {
+        return;
+    }
+    char message[kMessageCapacity]{};
+    (void)std::snprintf(message,
+                        sizeof message,
+                        "Copied %s to %s.",
+                        name.c_str(),
+                        character_label(target).c_str());
+    report(message, false);
+}
+
+/**
+ * Moves one loadout to where another is, which is how a dragged row is dropped. The row being dragged
+ * is named by index, which only stays true while the list holds still, so an index the list no longer
+ * has is let go of rather than read.
+ */
+void move_saved(std::size_t from, std::size_t to) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    if (from == to || from >= loadouts.entries.size() || to >= loadouts.entries.size()) {
+        return;
+    }
+    let_go();
+    std::vector<edit::SavedLoadout> before = loadouts.entries;
+    edit::SavedLoadout moving = std::move(loadouts.entries[from]);
+    loadouts.entries.erase(loadouts.entries.begin() + static_cast<std::ptrdiff_t>(from));
+    loadouts.entries.insert(loadouts.entries.begin() + static_cast<std::ptrdiff_t>(to), std::move(moving));
+    if (!commit(std::move(before))) {
+        return;
+    }
+    choose(static_cast<int>(to));
 }
 
 /**
  * Equips one saved loadout and says what it came to. A piece whose copy has gone is made again from
  * the build, and the loadout is pointed at the new copy so the next equip finds it rather than making
  * another. A piece the build no longer carries is counted in the message rather than refusing the rest.
- * @return True when the sheet should close, so the outcome can be read in the bar behind it.
  */
-bool equip_saved(edit::SavedLoadout& loadout) noexcept {
+void equip_saved(edit::SavedLoadout& loadout) noexcept {
     Model& state = model();
     edit::LoadoutResult result;
     std::string refused;
@@ -176,26 +451,41 @@ bool equip_saved(edit::SavedLoadout& loadout) noexcept {
                                              result,
                                              refused);
     char message[kMessageCapacity]{};
-    if (result.equipped == 0 && result.recreated == 0) {
+    const bool nothingOn = result.equipped == 0 && result.recreated == 0;
+    // Only an equip that changed nothing can stop here: one that refitted a piece it then could not
+    // put on has still changed the draft, which has to be recorded and published like any other edit.
+    if (nothingOn && !changed) {
         (void)std::snprintf(message,
                             sizeof message,
                             "None of %s's pieces are available on this character.",
                             loadout.name.c_str());
         report(message, true);
-        return false;
+        return;
     }
+    // Pointing the loadout at the copies it made belongs to the equip, so the equip's step takes it
+    // with it and one undo takes back both.
     bool repointed = true;
-    if (result.recreated != 0) {
+    const bool adopted = loadout.character != character().soid;
+    if (result.recreated != 0 || adopted) {
+        std::vector<edit::SavedLoadout> before = state.loadouts.entries;
+        adopt(loadout);
         for (std::size_t slot = 0; slot < result.replaced.size(); ++slot) {
             if (result.replaced[slot] != 0) {
                 loadout.pieces[slot].instance = result.replaced[slot];
             }
         }
         repointed = persist();
+        if (repointed) {
+            note_loadouts_change(std::move(before));
+        } else {
+            state.loadouts.entries = std::move(before);
+        }
     }
     int written = std::snprintf(message,
                                 sizeof message,
-                                changed ? "Equipped %s." : "%s is already equipped.",
+                                !changed    ? "%s is already equipped."
+                                : nothingOn ? "None of %s's pieces could be equipped."
+                                            : "Equipped %s.",
                                 loadout.name.c_str());
     const auto append = [&](const char* format, auto... values) {
         if (written >= 0 && static_cast<std::size_t>(written) < sizeof message) {
@@ -203,7 +493,10 @@ bool equip_saved(edit::SavedLoadout& loadout) noexcept {
         }
     };
     if (result.recreated != 0) {
-        append(" Made %zu missing %s again.", result.recreated, result.recreated == 1 ? "piece" : "pieces");
+        append(" Recreated %zu missing %s.", result.recreated, result.recreated == 1 ? "piece" : "pieces");
+    }
+    if (result.refitted != 0) {
+        append(" Restored saved perks on %zu %s.", result.refitted, result.refitted == 1 ? "piece" : "pieces");
     }
     if (result.unavailable != 0) {
         append(" %zu of %zu %s unavailable.",
@@ -212,18 +505,34 @@ bool equip_saved(edit::SavedLoadout& loadout) noexcept {
                result.saved == 1 ? "piece is" : "pieces are");
     }
     if (!repointed) {
-        append(" The loadouts file could not be updated to name them.");
+        append(" Could not save the recreated pieces to the loadouts file.");
     }
     if (!changed) {
         report(message, false);
-        return true;
+        return;
     }
     // The apply that publishes this writes its own outcome over the bar, so what the loadout came
     // to is carried in front of it rather than lost under it.
     state.status = message;
     state.editNote = message;
     record_edit(true);
-    return true;
+}
+
+/**
+ * Fits each saved plug the build still carries over one item's own, as equipping would. The sheet
+ * previews a piece through this, so what it shows is what the equip would leave.
+ */
+void fit_saved_plugs(edit::Item& item, const edit::SavedPiece& piece) noexcept {
+    const edit::Catalog& catalog = model().catalog;
+    if (!edit::materialize(item, catalog)) {
+        return;
+    }
+    for (std::size_t lane = 0; lane < piece.plugs.size() && lane < item.sockets.plugCount; ++lane) {
+        const edit::CatalogItem* plug = piece.plugs[lane] != 0 ? catalog.find(piece.plugs[lane]) : nullptr;
+        if (plug != nullptr && plug->plug) {
+            item.sockets.plugs[lane] = piece.plugs[lane];
+        }
+    }
 }
 
 /**
@@ -242,22 +551,36 @@ bool equip_saved(edit::SavedLoadout& loadout) noexcept {
     copy.level = std::clamp(piece.level > 0 ? piece.level : current ? current->level : level_of(state.grant.power),
                             0,
                             edit::kMaximumItemLevel);
-    if (!edit::materialize(copy, state.catalog)) {
-        return copy;
-    }
-    for (std::size_t lane = 0; lane < piece.plugs.size() && lane < copy.sockets.plugCount; ++lane) {
-        if (piece.plugs[lane] != 0 && state.catalog.find(piece.plugs[lane]) != nullptr) {
-            copy.sockets.plugs[lane] = piece.plugs[lane];
-        }
-    }
+    fit_saved_plugs(copy, piece);
     return copy;
+}
+
+/**
+ * @return The item one saved piece reads as once the loadout is equipped: the held copy with its
+ * saved plugs fitted back in, or the copy that would be made of it, or nothing when it is neither.
+ */
+[[nodiscard]] std::optional<edit::Item> equipped_as(const edit::SavedPiece& piece,
+                                                    edit::PieceState standing,
+                                                    std::size_t slot) noexcept {
+    if (standing == edit::PieceState::missing) {
+        return remade_copy(piece, slot);
+    }
+    if (standing != edit::PieceState::equipped && standing != edit::PieceState::stowed) {
+        return std::nullopt;
+    }
+    const edit::Item* held = find_owned_item(piece.instance);
+    if (held == nullptr) {
+        return std::nullopt;
+    }
+    edit::Item refitted = *held;
+    fit_saved_plugs(refitted, piece);
+    return refitted;
 }
 
 /**
  * Draws one saved piece: its icon framed in its rarity, veiled when the piece is unavailable, or a
  * recess where the slot was empty or the build no longer carries the item. Under the pointer it
- * shows the item's own tooltip, as a card does: from the character's own copy when it still holds
- * one, and for a piece whose copy has gone, the copy equipping would make.
+ * shows the item's own tooltip, as a card does, as the piece will be once the loadout is equipped.
  */
 void draw_piece(const edit::SavedPiece& piece,
                 edit::PieceState standing,
@@ -278,122 +601,310 @@ void draw_piece(const edit::SavedPiece& piece,
     if (standing == edit::PieceState::unavailable) {
         draw->AddRectFilled(at, corner, ImGui::GetColorU32(kUnavailableVeil));
     }
-    if (!rowHovered || !ImGui::IsMouseHoveringRect(at, corner)) {
+    // Nothing is described under a row being dragged, which is carrying the pointer elsewhere.
+    if (!rowHovered || ImGui::GetDragDropPayload() != nullptr || !ImGui::IsMouseHoveringRect(at, corner)) {
         return;
     }
-    if (standing == edit::PieceState::missing) {
-        const edit::Item copy = remade_copy(piece, slot);
-        tooltip::draw(*definition, &copy);
-        return;
-    }
-    const edit::Item* owned = find_owned_item(piece.instance);
-    tooltip::draw(*definition, owned != nullptr && owned->definitionHash == piece.definition ? owned : nullptr);
+    const std::optional<edit::Item> item = equipped_as(piece, standing, slot);
+    tooltip::draw(*definition, item ? &*item : nullptr);
 }
 
-/** @return The width a word button takes for its label, at the height of the line it sits on. */
+/**
+ * @return The armor stats one loadout adds up to on this character, as the character screen adds
+ * them up: each piece's shown stats as the piece will be once equipped. A piece that is unavailable
+ * adds nothing. `counted` says whether any armor did.
+ */
+[[nodiscard]] edit::Stats loadout_totals(const edit::SavedLoadout& entry, const Preview& preview, bool& counted) noexcept {
+    const Model& state = model();
+    edit::Stats totals{};
+    counted = false;
+    for (std::size_t slot = kLastWeaponSlot + 1; slot <= kLastArmorSlot; ++slot) {
+        const std::optional<edit::Item> item = equipped_as(entry.pieces[slot], preview.standing[slot], slot);
+        if (!item) {
+            continue;
+        }
+        counted = true;
+        const edit::Stats shown = edit::shown_stats(*item, state.catalog);
+        for (std::size_t i = 0; i < totals.size(); ++i) {
+            totals[i] += shown[i];
+        }
+    }
+    return totals;
+}
+
+/** @return The width a word button takes for its label. */
 [[nodiscard]] float word_width(const char* label) noexcept {
     return ImGui::CalcTextSize(label).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
 }
 
+/** @return The width every action before Delete shares: the widest word any of them shows, asking included. */
+[[nodiscard]] float action_width() noexcept {
+    float width = 0.0F;
+    for (const char* label : {kEquipLabel, kEquippedLabel, kSaveOverLabel, kSaveConfirmLabel, kRenameLabel, kCopyLabel}) {
+        width = (std::max)(width, word_width(label));
+    }
+    return width;
+}
+
+/** @return The width Delete and Close share, so the two buttons at the far end line up one over the other. */
+[[nodiscard]] float end_width() noexcept {
+    return (std::max)({word_width(kDeleteLabel), word_width(kDeleteConfirmLabel), pixels(kCloseWidth)});
+}
+
+/** Shows what the action just drawn does while the pointer is on it, including while it is disabled. */
+void explain(const char* tip) noexcept {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", tip);
+    }
+}
+
 /**
- * Draws one loadout row and reports what was pressed on it.
- * The whole row is one control, which equips the loadout, as a perk row applies its perk. Update
- * and Delete sit over the far end of the piece strip and take the pointer before the row does.
- * @param entry Saved loadout the row shows.
- * @param confirming True when this row's Delete was pressed once and now asks to be confirmed.
- * @param width Row width in framebuffer pixels.
+ * Draws a word button that asks once more before it acts: pressed once it turns into its
+ * confirmation, in the colour the action deserves, at a width that holds both words so nothing moves
+ * under the pointer between the two presses.
+ * @return True when it was pressed, whether to ask or to confirm.
  */
-[[nodiscard]] RowPress draw_row(const edit::SavedLoadout& entry,
-                                bool confirming,
-                                float width) noexcept {
-    const Model& state = model();
-    const state::CharacterState& owner = character();
+[[nodiscard]] bool confirming_button(const char* label,
+                                     const char* confirm,
+                                     bool asking,
+                                     const ImVec4& color,
+                                     const char* tip,
+                                     const char* confirmTip,
+                                     float width) noexcept {
+    if (asking) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{color.x, color.y, color.z, kAskingFill});
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{color.x, color.y, color.z, kAskingFillHovered});
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{color.x, color.y, color.z, kAskingFillActive});
+    }
+    const bool pressed = ImGui::Button(asking ? confirm : label, {width, pixels(controls::kActionHeight)});
+    if (asking) {
+        ImGui::PopStyleColor(3);
+    }
+    explain(asking ? confirmTip : tip);
+    return pressed;
+}
+
+/**
+ * Draws the chosen loadout's actions on one line from the cursor: Equip first, as the one the sheet
+ * is for, and Delete at the far end, away from it.
+ * @param right Screen X the line ends at.
+ */
+[[nodiscard]] Press draw_actions(const Preview& preview,
+                                 bool confirmingSave,
+                                 bool confirmingDelete,
+                                 const std::vector<std::size_t>& targets,
+                                 float right) noexcept {
+    const Loadouts& loadouts = model().loadouts;
+    Press press;
+    // The actions before Delete share one width, so the line reads as one row of equal buttons. When
+    // Copy To joins them and the row would push Delete off the line, they narrow together instead.
+    const float gap = pixels(kActionGap);
+    const float endWidth = end_width();
+    const float count = targets.empty() ? 3.0F : 4.0F;
+    const float room = right - ImGui::GetCursorScreenPos().x - endWidth - (count * gap);
+    const ImVec2 size{(std::max)(0.0F, (std::min)(action_width(), room / count)), pixels(controls::kActionHeight)};
+    // The white button is the sheet's one action, so it is only white while it can act: a loadout
+    // already on keeps the place with a plain button that says so.
+    const bool inPlace = preview.in_place();
+    if (inPlace) {
+        ImGui::BeginDisabled();
+        (void)ImGui::Button(kEquippedLabel, size);
+        ImGui::EndDisabled();
+    } else if (controls::primary_button(kEquipLabel, size)) {
+        press.action = RowAction::equip;
+    }
+    explain(inPlace ? kInPlaceTip : kEquipTip);
+    ImGui::BeginDisabled(!loadouts.writable);
+    ImGui::SameLine(0.0F, gap);
+    if (confirming_button(kSaveOverLabel, kSaveConfirmLabel, confirmingSave, tooltip::pending(), kSaveOverTip, kSaveConfirmTip, size.x)) {
+        press.action = RowAction::saveOver;
+    }
+    ImGui::SameLine(0.0F, gap);
+    if (ImGui::Button(kRenameLabel, size)) {
+        press.action = RowAction::rename;
+    }
+    explain(kRenameTip);
+    if (!targets.empty()) {
+        ImGui::SameLine(0.0F, gap);
+        if (ImGui::Button(kCopyLabel, size)) {
+            ImGui::OpenPopup(kCopyMenu);
+        }
+        explain(kCopyTip);
+        if (ImGui::BeginPopup(kCopyMenu)) {
+            for (const std::size_t target : targets) {
+                if (ImGui::Selectable(character_label(target).c_str())) {
+                    press = {RowAction::copy, target};
+                }
+            }
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::SameLine(0.0F, gap);
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos({(std::max)(at.x, right - endWidth), at.y});
+    if (confirming_button(kDeleteLabel,
+                          kDeleteConfirmLabel,
+                          confirmingDelete,
+                          controls::kRefusedColor,
+                          kDeleteTip,
+                          kDeleteConfirmTip,
+                          endWidth)) {
+        press.action = RowAction::remove;
+    }
+    ImGui::EndDisabled();
+    return press;
+}
+
+/**
+ * Draws the name line's far end: the words saying where the loadout stands, set right to left.
+ * @return Where the words begin, which is where the name must stop.
+ */
+[[nodiscard]] float draw_status(const Preview& preview, Origin source, float right, float baseline) noexcept {
+    auto* draw = ImGui::GetWindowDrawList();
+    float end = right;
+    const auto word = [&](const char* text, const ImVec4& color) {
+        const std::string capitals = art::shout(text);
+        end -= ImGui::CalcTextSize(capitals.c_str()).x;
+        draw->AddText({end, baseline}, ImGui::GetColorU32(color), capitals.c_str());
+        end -= pixels(kWordGap);
+    };
+    char count[kLineCapacity]{};
+    // Which loadout is on is what a player scans the list for, so it is set in full; the rest is detail.
+    if (preview.in_place()) {
+        word(kInPlaceWord, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    } else {
+        if (preview.unavailable != 0) {
+            (void)std::snprintf(count, sizeof count, "%zu unavailable", preview.unavailable);
+            word(count, tooltip::pending());
+        }
+        // A piece whose copy has gone is made again on equip, which is worth saying but is no fault.
+        if (preview.missing != 0) {
+            (void)std::snprintf(count, sizeof count, "%zu missing", preview.missing);
+            word(count, tooltip::muted());
+        }
+    }
+    if (source == Origin::past) {
+        word(kPastWord, tooltip::muted());
+    }
+    return end;
+}
+
+/**
+ * Draws one loadout row and reports what was pressed on it: the row itself chooses the loadout and a
+ * double-click equips it. A row can be dragged onto another to move it there.
+ * @param index Loadout the row shows, as an index into the saved list.
+ * @param source Where the loadout comes from.
+ * @param width Row width in framebuffer pixels.
+ * @param drop Receives the index of a row dropped onto this one.
+ */
+[[nodiscard]] Press draw_row(std::size_t index, Origin source, float width, int& drop) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    const edit::SavedLoadout& entry = loadouts.entries[index];
     const ImGuiStyle& style = ImGui::GetStyle();
     auto* draw = ImGui::GetWindowDrawList();
     const float padding = pixels(kRowPadding);
     const float emblem = pixels(kEmblemExtent);
     const float piece = pixels(kPieceExtent);
+    const bool chosen = loadouts.chosen == static_cast<int>(index);
+    const bool renaming = loadouts.renaming == static_cast<int>(index);
+    const Preview preview = preview_of(entry);
+
     const float rowHeight = emblem + (padding * 2.0F);
-
-    // Where every piece stands, which both the strip and the row's word read. The preview and the
-    // equip read a piece the same way, so the row never promises a piece the equip will skip.
-    std::array<edit::PieceState, inv::kEquipmentSlotCount> standing{};
-    std::size_t stowed = 0;
-    std::size_t equipped = 0;
-    std::size_t missing = 0;
-    std::size_t unavailable = 0;
-    for (std::size_t slot = 0; slot < standing.size(); ++slot) {
-        standing[slot] = edit::piece_state(owner, state.catalog, entry.pieces[slot]);
-        stowed += standing[slot] == edit::PieceState::stowed ? 1U : 0U;
-        equipped += standing[slot] == edit::PieceState::equipped ? 1U : 0U;
-        missing += standing[slot] == edit::PieceState::missing ? 1U : 0U;
-        unavailable += standing[slot] == edit::PieceState::unavailable ? 1U : 0U;
-    }
-    // Nothing left to put on: every piece is already on, and none has to be made again.
-    const bool inPlace = stowed == 0 && missing == 0 && equipped != 0;
-
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 corner{origin.x + width, origin.y + rowHeight};
+    if (chosen && loadouts.reveal) {
+        ImGui::SetScrollHereY();
+        loadouts.reveal = false;
+    }
+
+    // The hit target covers the whole row. It goes in first, so every mark after it is drawn over its fill.
     ImGui::SetNextItemAllowOverlap();
     const bool clicked = ImGui::InvisibleButton("loadout", {width, rowHeight});
     const bool hovered = ImGui::IsItemHovered();
-    if (hovered) {
-        draw->AddRectFilled(origin,
-                            {origin.x + width, origin.y + rowHeight},
-                            ImGui::GetColorU32(ImGuiCol_FrameBgHovered),
-                            pixels(controls::kRowRounding));
+    Press press;
+    if (clicked) {
+        press.action = RowAction::choose;
     }
-    draw->AddLine({origin.x, origin.y + rowHeight},
-                  {origin.x + width, origin.y + rowHeight},
-                  ImGui::GetColorU32(tooltip::rule_color()));
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        press.action = RowAction::equip;
+    }
+    // A row is moved by dragging it onto another. The drag starts only past the pointer's threshold,
+    // so a click still chooses and a double-click still equips.
+    if (loadouts.renaming < 0 && ImGui::BeginDragDropSource()) {
+        const int dragged = static_cast<int>(index);
+        (void)ImGui::SetDragDropPayload(kRowPayload, &dragged, sizeof dragged);
+        ImGui::TextUnformatted(art::shout(entry.name).c_str());
+        ImGui::EndDragDropSource();
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(
+            kRowPayload, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (payload != nullptr && payload->DataSize == static_cast<int>(sizeof(int))) {
+            const int dragged = *static_cast<const int*>(payload->Data);
+            if (dragged != static_cast<int>(index)) {
+                // The mark says where the row lands: under this one when it comes from above, over
+                // it when it comes from below.
+                const float y = dragged < static_cast<int>(index) ? corner.y : origin.y;
+                draw->AddLine({origin.x, y}, {corner.x, y}, ImGui::GetColorU32(ImGuiCol_Text), pixels(controls::kRailWidth));
+                if (payload->IsDelivery()) {
+                    drop = dragged;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (chosen) {
+        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(ImGuiCol_Header), pixels(controls::kRowRounding));
+        draw->AddRectFilled(origin, {origin.x + pixels(controls::kRailWidth), corner.y}, ImGui::GetColorU32(ImGuiCol_Text));
+    } else if (hovered) {
+        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), pixels(controls::kRowRounding));
+    }
+    draw->AddLine({origin.x, corner.y}, {corner.x, corner.y}, ImGui::GetColorU32(tooltip::rule_color()));
 
     // The subclass stands as the loadout's emblem, at the height of the row, as the band's icon
     // stands at the height of the band.
+    const float left = origin.x + padding;
     draw_piece(entry.pieces[kSubclassSlot],
-               standing[kSubclassSlot],
+               preview.standing[kSubclassSlot],
                kSubclassSlot,
-               {origin.x + padding, origin.y + padding},
+               {left, origin.y + padding},
                emblem,
                hovered);
 
     // The name and the strip hang as one block, centred on the emblem.
-    const float textLeft = origin.x + padding + emblem + pixels(kEmblemGap);
-    const float right = origin.x + width - padding;
+    const float textLeft = left + emblem + pixels(kEmblemGap);
+    const float right = corner.x - padding;
     const float nameSize = style.FontSizeBase * controls::kSubheadingScale;
     const float nameWeight = art::push_title(nameSize, 0.0F);
     const float nameLine = ImGui::GetTextLineHeight();
     ImGui::PopFont();
     const float top = origin.y + ((rowHeight - (nameLine + pixels(kLineGap) + piece)) * 0.5F);
-
-    // The row's word sits at the far end of the name line, on its baseline, as a perk row's does,
-    // and what equipping would leave behind is said just before it, in the colour a pending value
-    // takes. Both belong on this line: the strip under it keeps its far end for the two actions.
     const float baseline = top + (nameLine - ImGui::GetTextLineHeight());
-    const char* word = inPlace ? kEquippedWord : kEquipWord;
-    float end = right - ImGui::CalcTextSize(word).x;
-    draw->AddText({end, baseline},
-                  ImGui::GetColorU32(hovered && !inPlace ? ImGui::GetStyleColorVec4(ImGuiCol_Text)
-                                                         : tooltip::muted()),
-                  word);
-    if (unavailable != 0) {
-        char count[kLineCapacity]{};
-        (void)std::snprintf(count, sizeof count, "%zu unavailable", unavailable);
-        end -= pixels(kWordGap) + ImGui::CalcTextSize(count).x;
-        draw->AddText({end, baseline}, ImGui::GetColorU32(tooltip::pending()), count);
+    const float end = draw_status(preview, source, right, baseline);
+    const float nameWidth = (std::max)(0.0F, end - textLeft);
+    if (renaming) {
+        ImGui::SetCursorScreenPos({textLeft, top + ((nameLine - ImGui::GetFrameHeight()) * 0.5F)});
+        ImGui::SetNextItemWidth(nameWidth);
+        if (loadouts.focusRename) {
+            ImGui::SetKeyboardFocusHere();
+            loadouts.focusRename = false;
+        }
+        const bool entered = ImGui::InputText("##rename",
+                                              loadouts.rename,
+                                              sizeof loadouts.rename,
+                                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        // Enter or a click elsewhere keeps the name typed; Escape keeps the one it had.
+        if (entered || (ImGui::IsItemDeactivated() && !ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+            press.action = RowAction::rename;
+        } else if (ImGui::IsItemDeactivated()) {
+            loadouts.renaming = -1;
+        }
+    } else {
+        (void)art::push_title(nameSize, 0.0F);
+        art::clipped_text(art::shout(entry.name), {textLeft, top}, nameWidth, ImGui::GetColorU32(ImGuiCol_Text), nameWeight);
+        ImGui::PopFont();
     }
-    // A piece whose copy has gone is made again on equip, which is worth saying but is no fault.
-    if (missing != 0) {
-        char count[kLineCapacity]{};
-        (void)std::snprintf(count, sizeof count, "%zu to remake", missing);
-        end -= pixels(kWordGap) + ImGui::CalcTextSize(count).x;
-        draw->AddText({end, baseline}, ImGui::GetColorU32(tooltip::muted()), count);
-    }
-    (void)art::push_title(nameSize, 0.0F);
-    art::clipped_text(art::shout(entry.name),
-                      {textLeft, top},
-                      (std::max)(0.0F, end - pixels(kWordGap) - textLeft),
-                      ImGui::GetColorU32(ImGuiCol_Text),
-                      nameWeight);
-    ImGui::PopFont();
 
     // The strip: the three weapons, a gap, then the five armor pieces.
     const float stripTop = top + nameLine + pixels(kLineGap);
@@ -402,150 +913,330 @@ void draw_piece(const edit::SavedPiece& piece,
         if (slot == kLastWeaponSlot + 1) {
             x += pixels(kPieceGroupGap) - pixels(kPieceGap);
         }
-        draw_piece(entry.pieces[slot], standing[slot], slot, {x, stripTop}, piece, hovered);
+        draw_piece(entry.pieces[slot], preview.standing[slot], slot, {x, stripTop}, piece, hovered);
         x += piece + pixels(kPieceGap);
     }
-
-    // Update and Delete, set as quiet words over the far end of the strip. Delete keeps its width
-    // when it turns into Confirm, so nothing shifts under the pointer between the two presses.
-    RowPress press = clicked ? RowPress::equip : RowPress::none;
-    const float updateWidth = word_width(kUpdateLabel);
-    const float deleteWidth = (std::max)(word_width(kDeleteLabel), word_width(kConfirmLabel));
-    const float buttonHeight = ImGui::GetFontSize();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{style.FramePadding.x, 0.0F});
-    ImGui::SetCursorScreenPos({right - deleteWidth - pixels(kActionGap) - updateWidth,
-                               stripTop + ((piece - buttonHeight) * 0.5F)});
-    ImGui::BeginDisabled(!model().loadouts.writable);
-    if (ImGui::Button(kUpdateLabel, {updateWidth, buttonHeight})) {
-        press = RowPress::update;
-    }
-    ImGui::SameLine(0.0F, pixels(kActionGap));
-    if (ImGui::Button(confirming ? kConfirmLabel : kDeleteLabel, {deleteWidth, buttonHeight})) {
-        press = RowPress::remove;
-    }
-    ImGui::EndDisabled();
-    ImGui::PopStyleVar();
     // The cursor is put back under the row, and an item submitted there so the list measures it.
-    ImGui::SetCursorScreenPos({origin.x, origin.y + rowHeight});
+    ImGui::SetCursorScreenPos({origin.x, corner.y});
     ImGui::Dummy({width, 0.0F});
     return press;
 }
 
-/** Draws the footer: a name and the save that uses it, then the close the sheet ends on. */
-[[nodiscard]] bool draw_footer() noexcept {
+/** @return The height the strip under the list takes: its name and totals line, a gap, and its actions. */
+[[nodiscard]] float strip_height() noexcept {
+    return ImGui::GetTextLineHeight() + pixels(kDetailGap) + pixels(controls::kActionHeight);
+}
+
+/**
+ * Draws the strip under the list, which holds the chosen loadout's name and armor totals on one
+ * line and its actions under them. It stands in one place whichever row is chosen, so a second
+ * press on a row can never land on an action that moved there.
+ * @param chosen Loadout the strip is for, or -1 for none.
+ * @param targets Characters a copy can go to.
+ * @return What was pressed.
+ */
+[[nodiscard]] Press draw_strip(int chosen, bool empty, const std::vector<std::size_t>& targets) noexcept {
+    const Loadouts& loadouts = model().loadouts;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    // With nothing saved, the list says so and says what to do; the strip adds no second instruction.
+    if (chosen < 0) {
+        if (!empty) {
+            ImGui::TextColored(tooltip::muted(), "%s", kChooseHint);
+        } else {
+            ImGui::Dummy({width, ImGui::GetTextLineHeight()});
+        }
+        ImGui::Dummy({width, pixels(kDetailGap) + pixels(controls::kActionHeight)});
+        return {};
+    }
+    const auto index = static_cast<std::size_t>(chosen);
+    const edit::SavedLoadout& entry = loadouts.entries[index];
+    const Preview preview = preview_of(entry);
+    // The name is set as the row sets it, in the title cut, so the actions under it read as that
+    // loadout's. It keeps a share of the line, and the totals follow it wherever it ends.
+    const std::string name = art::shout(entry.name);
+    const float weight = art::push_title(ImGui::GetStyle().FontSizeBase, 0.0F);
+    const float nameWidth = (std::min)(ImGui::CalcTextSize(name.c_str()).x + pixels(kStripNameGap), width * kStripNameShare);
+    art::clipped_text(name, at, nameWidth, ImGui::GetColorU32(ImGuiCol_Text), weight);
+    ImGui::PopFont();
+    bool counted = false;
+    const edit::Stats totals = loadout_totals(entry, preview, counted);
+    if (counted) {
+        ImGui::SetCursorScreenPos({at.x + nameWidth, at.y});
+        draw_stat_totals(totals, false);
+    }
+    ImGui::SetCursorScreenPos({at.x, at.y + ImGui::GetTextLineHeight() + pixels(kDetailGap)});
+    return draw_actions(preview,
+                        loadouts.pendingSave == chosen,
+                        loadouts.pendingDelete == chosen,
+                        targets,
+                        at.x + width);
+}
+
+/** Carries out what was pressed for one loadout, once the list is no longer being drawn. */
+void act(std::size_t index, const Press& press) noexcept {
     Loadouts& loadouts = model().loadouts;
+    // Anything but a second press of the same action lets go of the question it was asking.
+    if (press.action != RowAction::remove) {
+        loadouts.pendingDelete = -1;
+    }
+    if (press.action != RowAction::saveOver) {
+        loadouts.pendingSave = -1;
+    }
+    switch (press.action) {
+    case RowAction::none:
+        break;
+    case RowAction::choose:
+        choose(static_cast<int>(index));
+        break;
+    case RowAction::equip:
+        choose(static_cast<int>(index));
+        equip_saved(loadouts.entries[index]);
+        break;
+    case RowAction::saveOver:
+        if (loadouts.pendingSave == static_cast<int>(index)) {
+            loadouts.pendingSave = -1;
+            save_over(index);
+        } else {
+            loadouts.pendingSave = static_cast<int>(index);
+        }
+        break;
+    case RowAction::rename:
+        if (loadouts.renaming == static_cast<int>(index)) {
+            finish_rename(index);
+        } else {
+            start_rename(index);
+        }
+        break;
+    case RowAction::remove:
+        if (loadouts.pendingDelete == static_cast<int>(index)) {
+            delete_saved(index);
+        } else {
+            loadouts.pendingDelete = static_cast<int>(index);
+        }
+        break;
+    case RowAction::copy:
+        copy_saved(index, press.target);
+        break;
+    }
+}
+
+/**
+ * Takes the sheet's keys while no field is being typed in and no row is being dragged: the arrows
+ * move between rows, Enter equips the chosen one, F2 renames it and Delete deletes it, asking once
+ * more as the button does.
+ * @param rows The loadouts the sheet shows, in order.
+ * @return The row a key acted on and what it did, or no action.
+ */
+[[nodiscard]] std::pair<std::size_t, Press> take_keys(const std::vector<std::size_t>& rows) noexcept {
+    Loadouts& loadouts = model().loadouts;
+    // A dragged row is held by its index, which a key that changes the list would make name another.
+    if (rows.empty() || ImGui::GetIO().WantTextInput || loadouts.renaming >= 0 || ImGui::GetDragDropPayload() != nullptr
+        || !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+        return {0, {}};
+    }
+    const auto at = std::find(rows.begin(), rows.end(), static_cast<std::size_t>((std::max)(loadouts.chosen, 0)));
+    const bool held = loadouts.chosen >= 0 && at != rows.end();
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+        choose(static_cast<int>(!held ? rows.front() : at + 1 != rows.end() ? *(at + 1) : *at), true);
+    } else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+        choose(static_cast<int>(!held ? rows.back() : at != rows.begin() ? *(at - 1) : *at), true);
+    } else if (held && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+        return {*at, {RowAction::equip, 0}};
+    } else if (held && loadouts.writable && ImGui::IsKeyPressed(ImGuiKey_F2, false)) {
+        return {*at, {RowAction::rename, 0}};
+    } else if (held && loadouts.writable && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+        return {*at, {RowAction::remove, 0}};
+    }
+    return {0, {}};
+}
+
+/**
+ * Draws the footer: what the last action came to on one line, then a name and the save that uses
+ * it, and the close the sheet ends on.
+ * @return True when the sheet should close.
+ */
+[[nodiscard]] bool draw_footer() noexcept {
+    Model& state = model();
+    Loadouts& loadouts = state.loadouts;
     const ImGuiStyle& style = ImGui::GetStyle();
     const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     const float save = pixels(kSaveWidth);
-    const float closeWidth = pixels(kCloseWidth);
-    if (!loadouts.writable) {
-        ImGui::PushTextWrapPos(controls::kAutomaticWrapPosition);
-        ImGui::TextColored(tooltip::pending(), "%s", kUnreadable);
-        ImGui::PopTextWrapPos();
-    }
+    const float closeWidth = end_width();
+    draw_sheet_outcome(loadouts.writable ? nullptr : kUnreadable);
+    controls::space(controls::kRowSpacing);
+
     ImGui::BeginDisabled(!loadouts.writable);
     ImGui::SetNextItemWidth((std::max)(0.0F,
                                        right - ImGui::GetCursorPosX() - save - closeWidth
                                            - style.ItemSpacing.x - pixels(kFooterGap)));
     // A text field reports Enter itself; it is only the number fields that cannot.
     const bool entered = ImGui::InputTextWithHint("##loadout_name",
-                                                  "Name what is equipped now",
+                                                  kNameHint,
                                                   loadouts.name,
                                                   sizeof loadouts.name,
                                                   ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
-    if (controls::primary_button("Save current", {save, 0.0F}) || entered) {
+    // Equip is the one action the sheet is built around, so saving a new loadout is a plain button.
+    if (ImGui::Button(kSaveLabel, {save, 0.0F}) || entered) {
         save_current();
     }
+    explain(kSaveTip);
     ImGui::EndDisabled();
     // The one way out sits at the far end, as the game ends its sheets.
     ImGui::SameLine(right - closeWidth);
     return ImGui::Button("Close", {closeWidth, 0.0F});
 }
 
+/** Draws the two lines shown in place of the list while this character has nothing saved. */
+void draw_empty() noexcept {
+    const ImVec2 room = ImGui::GetContentRegionAvail();
+    const float left = ImGui::GetCursorPosX();
+    const float line = ImGui::GetTextLineHeightWithSpacing();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (std::max)(0.0F, (room.y - (line * 2.0F)) * 0.5F));
+    for (const auto& [text, muted] : {std::pair{kEmpty, false}, std::pair{kEmptyHint, true}}) {
+        ImGui::SetCursorPosX(left + (std::max)(0.0F, (room.x - ImGui::CalcTextSize(text).x) * 0.5F));
+        ImGui::TextColored(muted ? tooltip::muted() : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s", text);
+    }
+}
+
 } // namespace
 
 void open_loadouts() noexcept {
     ensure_loaded();
-    model().loadouts.pendingDelete = -1;
+    model().statusAtSheet = model().status;
+    Loadouts& loadouts = model().loadouts;
+    loadouts.pendingDelete = -1;
+    loadouts.pendingSave = -1;
+    loadouts.renaming = -1;
+    loadouts.chosen = -1;
+    loadouts.chooseOnOpen = true;
     ImGui::OpenPopup(kLoadoutsTitle);
 }
 
 void draw_loadouts_modal() noexcept {
-    // The sheet the perk picker is, so the editor's two sheets are one frame, head, ground and size.
+    // The sheet the perk picker is, so the editor's sheets are one frame, head, ground and size.
     if (!tooltip::begin_sheet(kLoadoutsTitle)) {
         return;
     }
     Model& state = model();
     Loadouts& loadouts = state.loadouts;
     const state::CharacterState& owner = character();
-    const std::size_t held = saved_by(owner.soid);
 
-    // The head names the sheet and the character it is for; the count heads the list, as the
-    // picker counts its perks.
+    // The rows this sheet offers, in the file's order, which is the order the player set by dragging.
+    std::vector<std::size_t> rows;
+    std::vector<Origin> sources;
+    for (std::size_t i = 0; i < loadouts.entries.size(); ++i) {
+        const Origin source = origin_of(loadouts.entries[i]);
+        if (source != Origin::none) {
+            rows.push_back(i);
+            sources.push_back(source);
+        }
+    }
+    // The sheet opens on the loadout that is on now, or else the first, so its actions are there at once.
+    if (loadouts.chooseOnOpen) {
+        loadouts.chooseOnOpen = false;
+        const auto inPlace = std::find_if(rows.begin(), rows.end(), [&loadouts](std::size_t i) {
+            return preview_of(loadouts.entries[i]).in_place();
+        });
+        choose(inPlace != rows.end() ? static_cast<int>(*inPlace)
+               : rows.empty()        ? -1
+                                     : static_cast<int>(rows.front()),
+               true);
+    }
+    // A choice the list no longer offers is let go.
+    if (loadouts.chosen >= 0
+        && std::find(rows.begin(), rows.end(), static_cast<std::size_t>(loadouts.chosen)) == rows.end()) {
+        choose(-1);
+    }
+    const std::vector<std::size_t> targets = copy_targets();
+
+    // The head names the sheet and the character it is for, and how to move a row once there are two.
     char line[kLineCapacity]{};
     (void)std::snprintf(line,
                         sizeof line,
-                        "%s %zu  /  %zu saved",
+                        rows.size() > 1 ? "%s %zu  /  %zu Saved  /  Drag loadouts to reorder them"
+                                        : "%s %zu  /  %zu Saved",
                         art::class_name(owner.characterClass),
                         state.character + 1,
-                        held);
+                        rows.size());
     tooltip::draw_sheet_head(kLoadoutsTitle, line);
-    controls::space(controls::kSectionSpacing);
-    (void)std::snprintf(line, sizeof line, "%zu %s", held, held == 1 ? "loadout" : "loadouts");
-    ImGui::TextColored(tooltip::muted(), "%s", art::shout(line).c_str());
     controls::space(controls::kRuleSpacing);
     ImGui::Separator();
 
-    bool close = false;
-    int removal = -1;
-    const float listHeight =
-        (std::max)(ImGui::GetFrameHeight(),
-                   ImGui::GetContentRegionAvail().y - (ImGui::GetFrameHeightWithSpacing() * kFooterLines)
-                       - (loadouts.writable ? 0.0F : ImGui::GetTextLineHeightWithSpacing()));
+    std::size_t pressedRow = 0;
+    Press pressed;
+    int drop = -1;
+    std::size_t dropOnto = 0;
+    // Under the list: a rule, the strip, the outcome line and the footer, and the gaps between them.
+    const float below = (pixels(controls::kRuleSpacing) * 2.0F) + strip_height() + ImGui::GetTextLineHeight()
+                        + ImGui::GetFrameHeight() + (pixels(controls::kRowSpacing) * 2.0F)
+                        + (ImGui::GetStyle().ItemSpacing.y * kFooterGaps);
+    const float listHeight = (std::max)(ImGui::GetFrameHeight(), ImGui::GetContentRegionAvail().y - below);
     // The rows set their own gaps, as the tooltip's rows do.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ImGui::GetStyle().ItemSpacing.x, 0.0F});
     if (ImGui::BeginChild("loadout_rows", {0.0F, listHeight})) {
         const float width = ImGui::GetContentRegionAvail().x;
-        for (std::size_t index = 0; index < loadouts.entries.size(); ++index) {
-            edit::SavedLoadout& entry = loadouts.entries[index];
-            if (entry.character != owner.soid) {
-                continue;
-            }
-            ImGui::PushID(static_cast<int>(index));
-            const RowPress press =
-                draw_row(entry, loadouts.pendingDelete == static_cast<int>(index), width);
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+            ImGui::PushID(static_cast<int>(rows[row]));
+            int dropped = -1;
+            const Press press = draw_row(rows[row], sources[row], width, dropped);
             ImGui::PopID();
-            if (press == RowPress::equip) {
-                close = equip_saved(entry) || close;
-            } else if (press == RowPress::update) {
-                update_saved(entry);
-            } else if (press == RowPress::remove) {
-                if (loadouts.pendingDelete == static_cast<int>(index)) {
-                    removal = static_cast<int>(index);
-                } else {
-                    loadouts.pendingDelete = static_cast<int>(index);
-                }
+            if (press.action != RowAction::none) {
+                pressedRow = rows[row];
+                pressed = press;
+            }
+            if (dropped >= 0) {
+                drop = dropped;
+                dropOnto = rows[row];
             }
         }
-        if (held == 0) {
-            const ImVec2 size = ImGui::CalcTextSize(kEmpty);
-            const ImVec2 room = ImGui::GetContentRegionAvail();
-            ImGui::SetCursorPos({ImGui::GetCursorPosX() + (std::max)(0.0F, (room.x - size.x) * 0.5F),
-                                 ImGui::GetCursorPosY() + (std::max)(0.0F, (room.y - size.y) * 0.5F)});
-            ImGui::TextColored(tooltip::muted(), "%s", kEmpty);
+        if (rows.empty()) {
+            draw_empty();
         }
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
-    // The list is left alone while it is drawn, and a confirmed removal is taken out after it.
-    if (removal >= 0) {
-        delete_saved(static_cast<std::size_t>(removal));
+
+    controls::space(controls::kRuleSpacing);
+    ImGui::Separator();
+    controls::space(controls::kRuleSpacing);
+    ImGui::PushID("strip");
+    const Press stripPress = draw_strip(loadouts.chosen, rows.empty(), targets);
+    ImGui::PopID();
+    if (stripPress.action != RowAction::none && loadouts.chosen >= 0) {
+        pressedRow = static_cast<std::size_t>(loadouts.chosen);
+        pressed = stripPress;
+    }
+
+    // Keys act on the chosen row as its buttons do.
+    if (pressed.action == RowAction::none) {
+        const auto [keyedRow, keyed] = take_keys(rows);
+        pressedRow = keyedRow;
+        pressed = keyed;
+    }
+    // Escape first closes a menu the sheet has open, then lets go of a question waiting to be
+    // answered, and only then closes the sheet. A rename it cancels was let go of by its own field,
+    // which is still taking the keys this frame.
+    bool close = false;
+    const bool escape = ImGui::IsKeyPressed(ImGuiKey_Escape, false)
+                        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    if (escape && (loadouts.pendingDelete >= 0 || loadouts.pendingSave >= 0)) {
+        loadouts.pendingDelete = -1;
+        loadouts.pendingSave = -1;
+    } else if (escape && !ImGui::GetIO().WantTextInput && loadouts.renaming < 0) {
+        close = true;
+    }
+    // The list is left alone while it is drawn; what was pressed on it is carried out after it.
+    if (drop >= 0) {
+        move_saved(static_cast<std::size_t>(drop), dropOnto);
+    } else if (pressed.action != RowAction::none) {
+        act(pressedRow, pressed);
     }
 
     controls::space(controls::kRowSpacing);
     close = draw_footer() || close;
-    if (close || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    if (close) {
         ImGui::CloseCurrentPopup();
     }
     tooltip::end_sheet();

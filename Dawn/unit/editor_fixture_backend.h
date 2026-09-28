@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <unordered_map>
 
 namespace fixture {
@@ -22,14 +23,27 @@ inline std::unordered_map<std::uint16_t, state::build_data::socket_entry_lists::
 inline state::build_data::constants::InvestmentConstants constants;
 inline auto account = std::make_unique<state::AccountState>();
 inline unsigned checks{};
+/**
+ * Tags a read asked for that the fixtures do not hold. The extractor fetches them on its next pass,
+ * which is how the fixtures keep up with a catalog that reads more of the packages than it did.
+ */
+inline std::set<std::uint32_t> missing;
+/** Writes the tags the run asked for and could not find, one decimal tag a line, beside the fixtures. */
+inline void write_missing() {
+    std::ofstream output(directory / "missing.txt");
+    for (const auto tag : missing) output << tag << '\n';
+}
 inline void check(bool value, const char* message) {
     ++checks;
-    if (!value) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
+    if (!value) { write_missing(); std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
 }
 inline std::vector<std::byte> read(std::uint32_t tag) {
     char name[32]{}; std::snprintf(name, sizeof name, "%08X.bin", tag);
     std::ifstream input(directory / name, std::ios::binary | std::ios::ate);
-    if (!input) return {};
+    if (!input) {
+        if (tag >= 0x80800000U && tag < 0x82000000U) missing.insert(tag);
+        return {};
+    }
     const auto size = input.tellg(); input.seekg(0);
     std::vector<std::byte> output(static_cast<std::size_t>(size));
     input.read(reinterpret_cast<char*>(output.data()), size); return output;

@@ -120,6 +120,13 @@ void draw_rule() noexcept;
 void draw_heading(const char* text) noexcept;
 
 /**
+ * Draws one line of muted capitals at the cursor with no gaps of its own, as a sheet labels a group
+ * of controls or counts a list. `draw_heading` is the same line spaced for the inside of a frame.
+ * @param text Label, folded to capitals here.
+ */
+void draw_label(const char* text) noexcept;
+
+/**
  * Draws one plug as the tooltip badges it: a round badge behind a trait, and the plug's own
  * framed artwork on its own for a mod, a shader or an intrinsic.
  * @param plug Plug to draw, or null for an empty socket, which is drawn as a recess.

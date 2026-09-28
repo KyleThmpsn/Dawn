@@ -27,7 +27,7 @@ constexpr AbilityLane kAbilityLanes[]{
     {"Grenade", &state::CharacterState::grenadeAbilityEntry},
     {"Super", &state::CharacterState::superAbilityEntry},
     {"Melee", &state::CharacterState::meleeAbilityEntry},
-    {"Class ability", &state::CharacterState::classAbilityEntry},
+    {"Class Ability", &state::CharacterState::classAbilityEntry},
 };
 static_assert(std::size(kAbilityLanes)
                   == std::tuple_size_v<decltype(edit::CatalogItem::abilities)>,
@@ -152,7 +152,7 @@ void draw_subclass_group(float labelWidth, float controlWidth) noexcept {
     controls::field_label("Subclass", labelWidth);
     if (controls::begin_picker("##subclass",
                                current != nullptr ? current->name.c_str()
-                               : equipped         ? "Not in this build"
+                               : equipped         ? "Not in This Build"
                                                   : "None",
                                controlWidth)) {
         for (const auto& definition : state.catalog.items) {

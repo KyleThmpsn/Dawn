@@ -22,7 +22,6 @@ constexpr float kBannerPadding = 8.0F;
 constexpr float kBannerBorderThickness = 1.0F;
 /** Tab geometry: one clear pointer target, underlined while it owns the page. */
 constexpr float kTabRailInset = 10.0F;
-constexpr float kTabRailHeight = 2.0F;
 /** A hovered tab shows its rail at this alpha: a preview under the pointer, not a press. */
 constexpr float kTabHoverAlpha = 0.45F;
 /** Letter spacing of the capitals a tab and a section heading are set in. */
@@ -40,7 +39,6 @@ constexpr float kPickerChevronAlpha = 0.7F;
 constexpr float kPickerListPadding = 6.0F;
 constexpr float kPickerRowGap = 1.0F;
 constexpr float kPickerRowIndent = 6.0F;
-constexpr float kPickerRailWidth = 2.0F;
 constexpr float kPickerHairline = 1.0F;
 /** A primary action is the game's white button, so its label has to go dark on it. */
 constexpr ImVec4 kPrimaryFill{0.92F, 0.92F, 0.92F, 1.0F};
@@ -149,7 +147,7 @@ bool tab(const char* label, bool active, float width) noexcept {
                     false);
     // The game underlines the open tab in white, and a tab under the pointer in a fainter white.
     if (active || hovered) {
-        draw->AddRectFilled({origin.x + pixels(kTabRailInset), corner.y - pixels(kTabRailHeight)},
+        draw->AddRectFilled({origin.x + pixels(kTabRailInset), corner.y - pixels(kRailWidth)},
                             {corner.x - pixels(kTabRailInset), corner.y},
                             ImGui::GetColorU32(ImGuiCol_Text, active ? 1.0F : kTabHoverAlpha));
     }
@@ -201,7 +199,7 @@ bool picker_row(const char* label, bool selected) noexcept {
     ImGui::PopStyleVar();
     if (selected) {
         ImGui::GetWindowDrawList()->AddRectFilled(
-            {at.x, at.y}, {at.x + pixels(kPickerRailWidth), at.y + height},
+            {at.x, at.y}, {at.x + pixels(kRailWidth), at.y + height},
             ImGui::GetColorU32(ImGuiCol_Text));
     }
     return pressed;

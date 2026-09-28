@@ -7,6 +7,7 @@
 #include "art.h"
 #include "controls.h"
 #include "internal.h"
+#include "tooltip.h"
 
 namespace dawn::core::ui::modules::loadout::internal {
 namespace {
@@ -32,18 +33,21 @@ constexpr float kFramePaddingX = 6.0F;
 constexpr float kFramePaddingY = 2.0F;
 constexpr float kItemInnerSpacing = 4.0F;
 
-/** Width of each action bar button. Both, and the gap between them, are reserved on the right. */
+/** Width every action bar button shares. The buttons, and the gaps between them, are reserved on the right. */
 constexpr float kBarButtonWidth = 92.0F;
+/** The two history actions, set as words ahead of the live toggle, and the gap that sets them off. */
+constexpr const char* kUndoLabel = "Undo";
+constexpr const char* kRedoLabel = "Redo";
+/** 160 bytes hold a history action's tooltip with the characters it would change. */
+constexpr std::size_t kHistoryTipCapacity = 160;
 /** Label of the live-apply toggle. It is measured rather than reserved at a guessed width. */
-constexpr const char* kLiveToggleLabel = "Apply live";
+constexpr const char* kLiveToggleLabel = "Apply Live";
 /** Rail under the character tab the game currently has in play. */
 constexpr float kCharacterRailInset = 6.0F;
-constexpr float kCharacterRailHeight = 2.0F;
 /** Extra width one view tab takes beyond its label. */
 constexpr float kTabPadding = 26.0F;
 /** Grab width of the workspace splitter, and the width of the rail drawn inside it on hover. */
 constexpr float kSplitterWidth = 6.0F;
-constexpr float kSplitterRailWidth = 2.0F;
 /** The shadow the side workspace throws onto the page under its left edge. */
 constexpr float kWorkspaceShadowWidth = 18.0F;
 constexpr float kWorkspaceShadowAlpha = 0.45F;
@@ -70,25 +74,11 @@ constexpr float kProgressWidth = 360.0F;
 /** The catalog worker reports whole percent, which the progress bar takes as a fraction. */
 constexpr float kPercentScale = 100.0F;
 /** Title of the discard confirmation, used by both the action and its modal. */
-constexpr const char* kDiscardTitle = "Discard edits?";
+constexpr const char* kDiscardTitle = "Discard Edits?";
 /** Color of the unapplied-edits marker and of the divergence banner. */
-constexpr ImVec4 kPendingColor{0.88F, 0.76F, 0.47F, 1.0F};
+constexpr ImVec4 kPendingColor = controls::kPendingColor;
 /** Color of an outcome the game or the editor refused, set apart from an ordinary result. */
-constexpr ImVec4 kRefusedColor{0.94F, 0.48F, 0.42F, 1.0F};
-/** 32 bytes hold the longest character tab label: a class name and a one-digit slot. */
-constexpr std::size_t kCharacterLabelCapacity = 32;
-
-/** Writes one character tab label, such as "Warlock 2". The in-play mark is a rail, not text. */
-void write_character_label(const state::CharacterState& value,
-                           std::size_t index,
-                           char (&output)[kCharacterLabelCapacity]) noexcept {
-    (void)std::snprintf(output,
-                        sizeof output,
-                        "%s %zu",
-                        art::class_name(value.characterClass),
-                        index + 1);
-}
-
+constexpr ImVec4 kRefusedColor = controls::kRefusedColor;
 /**
  * Draws the view tabs across the top, in place of a navigation sidebar.
  * @return The window X where the row of tabs ends, so a caller can fill the rest of the row.
@@ -116,9 +106,7 @@ float draw_view_tabs() noexcept {
     const float padding = ImGui::GetStyle().FramePadding.x * 2.0F;
     float total = 0.0F;
     for (std::size_t i = 0; i < account.characterCount; ++i) {
-        char label[kCharacterLabelCapacity]{};
-        write_character_label(account.characters[i], i, label);
-        total += ImGui::CalcTextSize(label).x + padding;
+        total += ImGui::CalcTextSize(character_label(i).c_str()).x + padding;
         if (i != 0) {
             total += ImGui::GetStyle().ItemSpacing.x;
         }
@@ -137,8 +125,7 @@ void draw_character_tabs(bool inlineRow) noexcept {
     const float lift =
         inlineRow ? (pixels(controls::kTabHeight) - ImGui::GetFrameHeight()) * 0.5F : 0.0F;
     for (std::size_t i = 0; i < account.characterCount; ++i) {
-        char label[kCharacterLabelCapacity]{};
-        write_character_label(account.characters[i], i, label);
+        const std::string label = character_label(i);
         if (i != 0) {
             ImGui::SameLine();
         }
@@ -146,8 +133,8 @@ void draw_character_tabs(bool inlineRow) noexcept {
         // same baseline and the lift does not accumulate across the row.
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + lift);
         ImGui::PushID(static_cast<int>(i));
-        const float width = ImGui::CalcTextSize(label).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
-        if (ImGui::Selectable(label, i == state.character, 0, {width, 0.0F})) {
+        const float width = ImGui::CalcTextSize(label.c_str()).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
+        if (ImGui::Selectable(label.c_str(), i == state.character, 0, {width, 0.0F})) {
             state.character = i;
             state.selection = {};
             state.browse.type.clear();
@@ -160,7 +147,7 @@ void draw_character_tabs(bool inlineRow) noexcept {
             const ImVec2 lo = ImGui::GetItemRectMin();
             const ImVec2 hi = ImGui::GetItemRectMax();
             ImGui::GetWindowDrawList()->AddRectFilled(
-                {lo.x + pixels(kCharacterRailInset), hi.y - pixels(kCharacterRailHeight)},
+                {lo.x + pixels(kCharacterRailInset), hi.y - pixels(controls::kRailWidth)},
                 {hi.x - pixels(kCharacterRailInset), hi.y},
                 ImGui::GetColorU32(ImGuiCol_CheckMark));
         }
@@ -194,6 +181,45 @@ void draw_character_tabs_row(float tabsEnd) noexcept {
     draw_character_tabs(shares);
 }
 
+/**
+ * Draws one history action: its word, disabled while there is nothing to retrace, and under the
+ * pointer what it would change and the key that does the same.
+ * @param forward False for Undo, true for Redo.
+ */
+void draw_history_action(bool forward) noexcept {
+    const std::string subject = history_subject(forward);
+    ImGui::BeginDisabled(subject.empty());
+    // The bar's buttons share one width, so the row reads as one set of controls.
+    if (ImGui::Button(forward ? kRedoLabel : kUndoLabel, {pixels(kBarButtonWidth), 0.0F})) {
+        retrace_edit(forward);
+    }
+    ImGui::EndDisabled();
+    if (!subject.empty() && ImGui::IsItemHovered()) {
+        char tip[kHistoryTipCapacity]{};
+        (void)std::snprintf(tip,
+                            sizeof tip,
+                            forward ? "Redo the change to %s  (Ctrl+Y)" : "Undo the last change to %s  (Ctrl+Z)",
+                            subject.c_str());
+        ImGui::SetTooltip("%s", tip);
+    }
+}
+
+/**
+ * Takes the history keys: Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes. A field being typed in keeps
+ * them for its own text, and a control still held is an edit not yet recorded.
+ */
+void take_history_keys() noexcept {
+    if (ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive()) {
+        return;
+    }
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) {
+        retrace_edit(false);
+    } else if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y)
+               || ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) {
+        retrace_edit(true);
+    }
+}
+
 /** Draws the action bar: the state and last outcome left, the apply actions right. */
 void draw_action_bar() noexcept {
     Model& state = model();
@@ -213,19 +239,22 @@ void draw_action_bar() noexcept {
     // guessed 104 let an over-wide checkbox overdraw the Reload button beside it.
     const float toggleWidth = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x
                               + ImGui::CalcTextSize(kLiveToggleLabel).x;
+    // Undo and Redo lead the toggle, set off from it, so the three read as two groups.
+    const float historyWidth = (pixels(kBarButtonWidth) * 2.0F) + style.ItemSpacing.x + pixels(controls::kGroupGap);
     ImGui::AlignTextToFramePadding();
     if (state.draft->dirty) {
-        ImGui::TextColored(kPendingColor, "Unsaved changes");
+        ImGui::TextColored(kPendingColor, "Unsaved Changes");
     } else {
         ImGui::Dummy({0.0F, ImGui::GetFrameHeight()});
     }
     // What the last edit or apply came to. Without it a refused edit was indistinguishable from one
-    // still waiting to go: both left only "Unsaved changes" with nothing to say why. A refusal is
+    // still waiting to go: both left only "Unsaved Changes" with nothing to say why. A refusal is
     // set in its own colour, and the whole message is under the pointer when the row clips it.
     if (!state.status.empty()) {
         ImGui::SameLine();
-        const float room = (std::max)(
-            0.0F, right - actionsWidth - toggleWidth - style.ItemSpacing.x - ImGui::GetCursorPosX());
+        const float room = (std::max)(0.0F,
+                                      right - actionsWidth - toggleWidth - historyWidth
+                                          - style.ItemSpacing.x - ImGui::GetCursorPosX());
         const ImVec2 at = ImGui::GetCursorScreenPos();
         art::clipped_text(state.status,
                           {at.x, at.y + style.FramePadding.y},
@@ -238,7 +267,11 @@ void draw_action_bar() noexcept {
         }
     }
 
-    ImGui::SameLine((std::max)(ImGui::GetCursorPosX(), right - actionsWidth - toggleWidth));
+    ImGui::SameLine((std::max)(ImGui::GetCursorPosX(), right - actionsWidth - toggleWidth - historyWidth));
+    draw_history_action(false);
+    ImGui::SameLine();
+    draw_history_action(true);
+    ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
     bool live = state.applyInstantly;
     if (ImGui::Checkbox(kLiveToggleLabel, &live)) {
         state.applyInstantly = live;
@@ -267,12 +300,12 @@ void draw_action_bar() noexcept {
     ImGui::EndDisabled();
 
     if (ImGui::BeginPopupModal(kDiscardTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (ImGui::Button("Discard and reload")) {
+        if (ImGui::Button("Discard and Reload")) {
             reload_account();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Keep editing")) {
+        if (ImGui::Button("Keep Editing")) {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -348,7 +381,7 @@ void draw_splitter(float height, float lowerBound, float upperBound) noexcept {
         const ImVec2 lo = ImGui::GetItemRectMin();
         const ImVec2 hi = ImGui::GetItemRectMax();
         // Both widths scale, so the rail keeps its share of the grab band at every DPI.
-        const float inset = (pixels(kSplitterWidth) - pixels(kSplitterRailWidth)) * 0.5F;
+        const float inset = (pixels(kSplitterWidth) - pixels(controls::kRailWidth)) * 0.5F;
         ImGui::GetWindowDrawList()->AddRectFilled({lo.x + inset, lo.y},
                                                   {hi.x - inset, hi.y},
                                                   ImGui::GetColorU32(ImGuiCol_SeparatorActive));
@@ -382,6 +415,23 @@ void end_workspace() noexcept {
 }
 
 } // namespace
+
+void draw_sheet_outcome(const char* forced) noexcept {
+    const Model& state = model();
+    const std::string outcome = forced != nullptr                     ? std::string(forced)
+                                : state.status != state.statusAtSheet ? state.status
+                                                                      : std::string();
+    const bool refused = forced != nullptr || state.statusFailed;
+    const float width = ImGui::GetContentRegionAvail().x;
+    art::clipped_text(outcome,
+                      ImGui::GetCursorScreenPos(),
+                      width,
+                      ImGui::GetColorU32(refused ? controls::kRefusedColor : tooltip::muted()));
+    ImGui::Dummy({width, ImGui::GetTextLineHeight()});
+    if (!outcome.empty() && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", outcome.c_str());
+    }
+}
 
 float overlay_width() noexcept {
     const Model& state = model();
@@ -477,9 +527,9 @@ void draw_catalog_progress(CatalogPhase phase) noexcept {
 
 /** Draws the message shown while the account has no character to edit. */
 void draw_empty_account() noexcept {
-    ImGui::TextDisabled("No characters");
+    ImGui::TextDisabled("No Characters");
     controls::space(controls::kRowSpacing);
-    if (ImGui::Button("Reload account")) {
+    if (ImGui::Button("Reload Account")) {
         reload_account();
     }
 }
@@ -521,6 +571,7 @@ void draw_page() noexcept {
     draw_perk_picker();
     draw_removal_confirm();
     draw_action_bar();
+    take_history_keys();
 }
 
 } // namespace

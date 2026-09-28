@@ -9,6 +9,7 @@
 
 #include "../../scaling/dpi/ui_dpi_scaling.h"
 #include "art.h"
+#include "controls.h"
 #include "internal.h"
 #include "tooltip.h"
 #include "state/account/inventory/placement.h"
@@ -31,8 +32,6 @@ constexpr float kControlPaddingY = 1.0F;
 constexpr float kControlTextScale = 0.88F;
 /** Id of the card's context menu. */
 constexpr const char* kMenuId = "card_menu";
-/** 32 bytes hold a character's name in a menu: a class name and a one-digit slot. */
-constexpr std::size_t kCharacterLabelCapacity = 32;
 /** Set between the item's type and the word after it on the band's second line. */
 constexpr const char* kDetailSeparator = "  |  ";
 /**
@@ -51,11 +50,44 @@ constexpr float kPowerFieldWidth = 52.0F;
 /** Socket icons and the gap between them. */
 constexpr float kPlugExtent = 24.0F;
 constexpr float kPlugGap = 3.0F;
-/** Outline of the card the inspector is bound to, the same weight the armory gives its row. */
-constexpr float kSelectedThickness = 2.0F;
+/** A picked card's mark: a tick on the accent, set into the band's far corner. */
+constexpr float kPickMarkExtent = 14.0F;
+constexpr float kPickMarkInset = 4.0F;
+constexpr float kPickMarkRounding = 2.0F;
+constexpr float kPickTickThickness = 2.0F;
 /** The two lock labels. The button offers the action, so its label is what pressing it does. */
 constexpr const char* kLockLabel = "Lock";
 constexpr const char* kUnlockLabel = "Unlock";
+
+/** @return True when a card here can be picked for an action on many items: only the inventory page picks. */
+[[nodiscard]] bool pickable() noexcept {
+    return internal::model().view == internal::View::characterInventory;
+}
+
+/**
+ * Sets a picked card's tick into the far corner of its band. It is drawn from inside the card, after
+ * the band: a child draws over its page, so a tick the page drew there was covered by the band.
+ */
+void draw_pick_tick() noexcept {
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 lo = ImGui::GetWindowPos();
+    const ImVec2 hi{lo.x + ImGui::GetWindowSize().x, lo.y + ImGui::GetWindowSize().y};
+    const float mark = pixels(kPickMarkExtent);
+    const ImVec2 at{hi.x - mark - pixels(kPickMarkInset), lo.y + pixels(kPickMarkInset)};
+    draw->PushClipRect(lo, hi, false);
+    draw->AddRectFilled(at, {at.x + mark, at.y + mark}, ImGui::GetColorU32(ImGuiCol_CheckMark), pixels(kPickMarkRounding));
+    const ImVec2 tick[]{{at.x + (mark * 0.24F), at.y + (mark * 0.52F)},
+                        {at.x + (mark * 0.43F), at.y + (mark * 0.71F)},
+                        {at.x + (mark * 0.78F), at.y + (mark * 0.31F)}};
+    draw->AddPolyline(tick, 3, ImGui::GetColorU32(ImGuiCol_Text), 0, pixels(kPickTickThickness));
+    draw->PopClipRect();
+}
+
+/** Outlines a picked card in the accent, from the page, so the outline's outer half is not cut off. */
+void draw_pick_outline(ImVec2 lo, ImVec2 hi) noexcept {
+    ImGui::GetWindowDrawList()->AddRect(
+        lo, hi, ImGui::GetColorU32(ImGuiCol_CheckMark), pixels(kRounding), 0, pixels(controls::kRailWidth));
+}
 
 /** @return How many sockets one owned item shows on its card, or zero when it has none. */
 [[nodiscard]] std::size_t plug_count(const edit::Item* item) noexcept {
@@ -161,7 +193,7 @@ void draw_plug_row(const edit::CatalogItem& definition,
             if (fitted != nullptr) {
                 tooltip::draw_plug(*fitted);
             } else {
-                ImGui::SetTooltip("Empty socket");
+                ImGui::SetTooltip("Empty Socket");
             }
         }
         ImGui::PopID();
@@ -226,7 +258,10 @@ ImVec2 draw_band(const edit::CatalogItem* definition, const char* label) noexcep
         top += nameLine + gap;
     }
     if (!detail.empty()) {
-        art::clipped_text(detail, {textLeft, top}, textWidth, art::band_text(tier, true));
+        // An empty slot's band is the frame's own dark ground rather than a rarity's, so it takes the
+        // muted light text: the dark type a pale band takes all but vanished on it.
+        const ImU32 color = definition != nullptr ? art::band_text(tier, true) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        art::clipped_text(detail, {textLeft, top}, textWidth, color);
     }
 
     // The content cursor sits one padding below the frame, so the spacer covers what is left of
@@ -333,7 +368,7 @@ void draw_controls(const edit::CatalogItem& definition,
 void draw_send_menu(const edit::CatalogItem& definition, const edit::Item& item) noexcept {
     const internal::Model& state = internal::model();
     const state::AccountState& account = state.draft->after;
-    if (account.characterCount < 2 || !ImGui::BeginMenu("Send to")) {
+    if (account.characterCount < 2 || !ImGui::BeginMenu("Send To")) {
         return;
     }
     for (std::size_t index = 0; index < account.characterCount; ++index) {
@@ -341,11 +376,8 @@ void draw_send_menu(const edit::CatalogItem& definition, const edit::Item& item)
             continue;
         }
         const state::CharacterState& other = account.characters[index];
-        char label[kCharacterLabelCapacity]{};
-        (void)std::snprintf(
-            label, sizeof label, "%s %zu", art::class_name(other.characterClass), index + 1);
         ImGui::PushID(static_cast<int>(index));
-        if (ImGui::MenuItem(label, nullptr, false, edit::fits_class(definition, other.characterClass))) {
+        if (ImGui::MenuItem(internal::character_label(index).c_str(), nullptr, false, edit::fits_class(definition, other.characterClass))) {
             (void)internal::send_item(item.instanceSoid, index);
         }
         ImGui::PopID();
@@ -371,6 +403,13 @@ void draw_menu(const edit::CatalogItem& definition,
     if (ImGui::Selectable("Open")) {
         internal::select(definition, item.instanceSoid);
     }
+    // Picking gathers items for one action on all of them; Ctrl and a click does the same.
+    if (pickable() && ImGui::Selectable(internal::is_picked(item.instanceSoid) ? "Deselect" : "Select", false)) {
+        internal::toggle_pick(item.instanceSoid);
+    }
+    if (pickable() && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Ctrl+click also selects.");
+    }
     if (equipped) {
         if (ImGui::Selectable("Unequip")) {
             internal::record_edit(edit::unequip(
@@ -381,7 +420,7 @@ void draw_menu(const edit::CatalogItem& definition,
         }
     } else if (action == Action::pull) {
         // A postmaster item cannot be equipped, so the menu offers the pull in its place.
-        if (ImGui::Selectable("Pull from postmaster")) {
+        if (ImGui::Selectable("Pull from Postmaster")) {
             internal::record_edit(edit::pull_from_postmaster(
                 *state.draft, state.catalog, state.character, item.instanceSoid, state.status));
         }
@@ -428,9 +467,11 @@ void draw(edit::Item* item,
     const edit::CatalogItem* definition =
         item != nullptr ? state.catalog.find(item->definitionHash) : nullptr;
     const float padding = pixels(kPadding);
+    // Taken now: an unequip from the card's own menu moves the item before the outlines below read it.
+    const std::uint64_t instance = item != nullptr ? item->instanceSoid : 0;
 
     ImGui::PushID(static_cast<int>(slot));
-    ImGui::PushID(item != nullptr ? static_cast<int>(item->instanceSoid) : 0);
+    ImGui::PushID(static_cast<int>(instance));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{padding, padding});
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, pixels(kRounding));
     // A card is sized to its content by the page, so it never scrolls: a stray pixel of overflow
@@ -443,7 +484,7 @@ void draw(edit::Item* item,
         const ImVec2 bandCorner = draw_band(definition, label);
 
         if (definition == nullptr) {
-            if (ImGui::Button("Choose item", {-FLT_MIN, control_height()})) {
+            if (ImGui::Button("Choose Item", {-FLT_MIN, control_height()})) {
                 browse_for_slot(slot);
             }
         } else {
@@ -453,30 +494,40 @@ void draw(edit::Item* item,
             }
             draw_controls(*definition, *item, slot, action);
             draw_plug_row(*definition, *item, inner_width(width));
-            // The card as a whole opens the item in the inspector. This is asked after its own
-            // controls have been submitted, so a click that landed on the lock, the swap, the
-            // level field or a socket is already accounted for and does not select as well.
+            // The card as a whole opens the item in the inspector, or with Ctrl held picks it. This
+            // is asked after its own controls have been submitted, so a click that landed on the
+            // lock, the swap, the level field or a socket is already accounted for.
             if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()
                 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                internal::select(*definition, item->instanceSoid);
+                if (ImGui::GetIO().KeyCtrl && pickable()) {
+                    internal::toggle_pick(item->instanceSoid);
+                } else {
+                    internal::select(*definition, item->instanceSoid);
+                }
             }
             if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 ImGui::OpenPopup(kMenuId);
             }
             draw_menu(*definition, *item, slot, action);
         }
+        if (definition != nullptr && pickable() && internal::is_picked(instance)) {
+            draw_pick_tick();
+        }
     }
     ImGui::EndChild();
-    // The card the inspector holds is outlined in the accent, as the armory outlines its own
-    // selected row, so the page says which item the pane beside it is editing.
-    if (definition != nullptr && state.selection.holds(definition->definition.definitionHash,
-                                                        item->instanceSoid)) {
+    // The card the inspector holds is outlined in white, as the armory outlines its own selected
+    // row, so the page says which item the pane beside it is editing. A picked card is marked in
+    // the accent instead, so the set being gathered reads apart from the one card the pane holds.
+    if (definition != nullptr && pickable() && internal::is_picked(instance)) {
+        draw_pick_outline(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    }
+    if (definition != nullptr && state.selection.holds(definition->definition.definitionHash, instance)) {
         ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(),
                                             ImGui::GetItemRectMax(),
                                             ImGui::GetColorU32(ImGuiCol_Text),
                                             pixels(kRounding),
                                             0,
-                                            pixels(kSelectedThickness));
+                                            pixels(controls::kRailWidth));
     }
     ImGui::PopStyleVar(2);
     ImGui::PopID();

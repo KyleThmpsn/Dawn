@@ -270,8 +270,10 @@ void drain() {
         auto& texture = it->second; texture.pending = false;
         if (!result.primary) { texture.failed = true; continue; }
         // A device reset can drop an in-flight read and let the same tag be requested again, so a
-        // second result for one tag must replace the first rather than append past the array.
-        free(texture); texture.count = 0;
+        // second result can arrive for a tag that already has its views. Those views may be in this
+        // frame's draw list already, and freeing them left the renderer drawing released textures;
+        // the second result is the same artwork, so it is dropped instead.
+        if (texture.count != 0) continue;
         texture.width = result.width; texture.height = result.height;
         for (const auto& data : result.layers) {
             if (texture.count >= texture.views.size()) break;

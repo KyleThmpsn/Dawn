@@ -12,6 +12,7 @@
 
 #include "../../scaling/dpi/ui_dpi_scaling.h"
 #include "art.h"
+#include "controls.h"
 #include "internal.h"
 #include "preview.h"
 #include "state/account/inventory/placement.h"
@@ -197,13 +198,13 @@ constexpr std::size_t kNoTarget = static_cast<std::size_t>(-1);
  * The colour a target that has moved off the roll is set in, until a roll reaches it.
  * It is the editor's own pending gold, the colour the footer says "Unsaved Changes" in.
  */
-constexpr ImVec4 kPending{0.88F, 0.76F, 0.47F, 1.0F};
+constexpr ImVec4 kPending = controls::kPendingColor;
 /** A bar's track brightens under the pointer, which is how it says it can be taken hold of. */
 constexpr ImVec4 kBarTrackHovered{1.0F, 1.0F, 1.0F, 0.22F};
 /** The share of a target's fill drawn over the roll it is replacing, so both still read. */
 constexpr float kTargetFillAlpha = 0.55F;
 /** Shown on an editable socket with nothing fitted in it. */
-constexpr const char* kEmptySocket = "Empty socket";
+constexpr const char* kEmptySocket = "Empty Socket";
 /**
  * A perk row set out in full leaves this much between its lines, and pads itself above and below
  * by a share of the body padding so a stack of them still reads as rows rather than paragraphs.
@@ -1125,8 +1126,12 @@ void draw_rule() noexcept {
 
 void draw_heading(const char* text) noexcept {
     block_gap();
-    ImGui::TextColored(kMuted, "%s", art::shout(text).c_str());
+    draw_label(text);
     block_gap();
+}
+
+void draw_label(const char* text) noexcept {
+    ImGui::TextColored(kMuted, "%s", art::shout(text).c_str());
 }
 
 bool begin_frame(const char* id, float width) noexcept {

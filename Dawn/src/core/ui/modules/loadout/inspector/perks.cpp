@@ -20,7 +20,7 @@ using scaling::dpi::pixels;
 
 /** Scope rows, in the order of the PlugScope values. */
 constexpr const char* kScopeLabels[]{
-    "Compatible", "Socket + gear type", "Socket type", "Gear type", "All"};
+    "Compatible", "Socket + Gear Type", "Socket Type", "Gear Type", "All"};
 /** Warning shown for every scope past the compatible one. */
 constexpr const char* kExpandedScopeWarning = "May include perks this item does not support.";
 /** Stronger warning for the unrestricted scope. */
@@ -38,18 +38,18 @@ constexpr float kScopeWidth = 190.0F;
 constexpr float kTypeFilterWidth = 180.0F;
 constexpr float kRarityFilterWidth = 110.0F;
 constexpr float kSortWidth = 110.0F;
-constexpr const char* kSortLabels[]{"By type", "Name A-Z", "Rarity"};
+constexpr const char* kSortLabels[]{"By Type", "Name A-Z", "Rarity"};
 static_assert(std::size(kSortLabels) == static_cast<std::size_t>(Sort::count),
               "Every sort order needs a label.");
-constexpr const char* kAnyRarityLabel = "All rarities";
-constexpr const char* kDummyItemsLabel = "Dummy items";
+constexpr const char* kAnyRarityLabel = "All Rarities";
+constexpr const char* kDummyItemsLabel = "Dummy Items";
 /** 64 bytes hold a plug type with its count. */
 constexpr std::size_t kTypePreviewCapacity = 64;
 
 /** Shown when a picked plug is not one the socket will take in the chosen scope. */
 constexpr const char* kPerkRefused = "That perk cannot go in this socket.";
 /** Title of the picker, used by both the open call and the modal. */
-constexpr const char* kPickerTitle = "Choose a perk";
+constexpr const char* kPickerTitle = "Choose a Perk";
 
 /** The plugs the picker offers after its filters, and what each type would have shown. */
 struct Matches {
@@ -107,7 +107,7 @@ void draw_filter_row(const Matches& matches) noexcept {
     SocketPicker& picker = model().picker;
     char preview[kTypePreviewCapacity]{};
     if (picker.type.empty()) {
-        (void)std::snprintf(preview, sizeof preview, "All types (%zu)", matches.total);
+        (void)std::snprintf(preview, sizeof preview, "All Types (%zu)", matches.total);
     } else {
         const auto found = matches.types.find(picker.type);
         (void)std::snprintf(preview, sizeof preview, "%s (%zu)", picker.type.c_str(),
@@ -115,7 +115,7 @@ void draw_filter_row(const Matches& matches) noexcept {
     }
     if (controls::begin_picker("##perk_type", preview, pixels(kTypeFilterWidth))) {
         char row[kTypePreviewCapacity]{};
-        (void)std::snprintf(row, sizeof row, "All types (%zu)", matches.total);
+        (void)std::snprintf(row, sizeof row, "All Types (%zu)", matches.total);
         if (controls::picker_row(row, picker.type.empty())) {
             picker.type.clear();
         }
@@ -340,7 +340,7 @@ void draw_perk_picker() noexcept {
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - scopeWidth
                             - ImGui::GetStyle().ItemSpacing.x);
     (void)controls::search(
-        "##perk_search", "Search perks...", state.picker.search, sizeof state.picker.search);
+        "##perk_search", "Search Perks...", state.picker.search, sizeof state.picker.search);
     ImGui::SameLine();
     draw_scope_row(*definition);
 
@@ -350,8 +350,8 @@ void draw_perk_picker() noexcept {
     const std::vector<const edit::CatalogItem*>& options = matches.options;
     controls::space(controls::kRowSpacing);
     char count[32]{};
-    (void)std::snprintf(count, sizeof count, "%zu perks", options.size());
-    ImGui::TextColored(tooltip::muted(), "%s", art::shout(count).c_str());
+    (void)std::snprintf(count, sizeof count, "%zu Perks", options.size());
+    tooltip::draw_label(count);
     controls::space(controls::kRuleSpacing);
     ImGui::Separator();
     bool applied = false;

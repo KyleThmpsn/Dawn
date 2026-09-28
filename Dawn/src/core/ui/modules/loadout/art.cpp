@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "art.h"
+#include "controls.h"
 
 #include "../../fonts/runtime/ui_runtime_font_lifecycle.h"
 
@@ -73,7 +74,6 @@ constexpr float kResultTextRightInset = 10.0F;
 constexpr float kResultLineGap = 2.0F;
 constexpr float kResultNameScale = 1.15F;
 constexpr float kResultNameWeight = 0.8F;
-constexpr float kResultSelectedThickness = 2.0F;
 /** A row under the pointer lightens by this much over its band. */
 constexpr ImVec4 kResultHoverWash{1.0F, 1.0F, 1.0F, 0.10F};
 
@@ -89,7 +89,7 @@ void draw_icon_placeholder(const edit::CatalogItem& item, ImVec2 origin, float e
     const ImU32 color = ImGui::GetColorU32(ImGuiCol_TextDisabled);
     const bool loading = item.iconTag != 0 && !preview::unavailable(item.iconTag);
     if (extent >= pixels(kPlaceholderTextMinimumExtent)) {
-        const char* text = loading ? "Loading image" : "No package image";
+        const char* text = loading ? "Loading Image" : "No Package Image";
         const ImVec2 size = ImGui::CalcTextSize(text);
         draw->AddText({origin.x + ((extent - size.x) * 0.5F), origin.y + (extent * 0.5F)}, color, text);
         return;
@@ -282,7 +282,7 @@ void collection_card(const edit::CatalogItem& item, float width) noexcept {
                       ImGui::GetColorU32(ImGuiCol_Text),
                       0.0F,
                       0,
-                      pixels(kResultSelectedThickness));
+                      pixels(controls::kRailWidth));
     }
     if (hovered) {
         draw_card_tooltip(item, 0);

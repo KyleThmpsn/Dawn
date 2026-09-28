@@ -24,11 +24,12 @@ constexpr float kRandomizerLabelWidth = 110.0F;
 constexpr float kRandomizerFieldWidth = 90.0F;
 constexpr float kRandomizerButtonWidth = 120.0F;
 /** Title of the randomizer, used both for the action and for its modal. */
-constexpr const char* kRandomizeTitle = "Randomize loadout";
-/** The heading row's two actions, as words: no ellipsis, no arrow. */
+constexpr const char* kRandomizeTitle = "Randomize Loadout";
+/** The heading row's actions, as words: no ellipsis, no arrow. */
 constexpr const char* kRandomizeLabel = "Randomize";
 constexpr const char* kInventoryLabel = "Inventory";
 constexpr const char* kLoadoutsLabel = "Loadouts";
+constexpr const char* kOptimizeLabel = "Optimize Armor";
 
 /** Draws the randomizer modal and runs one roll when it is confirmed. */
 void draw_randomizer_modal() noexcept {
@@ -49,12 +50,12 @@ void draw_randomizer_modal() noexcept {
     }
     // A drag field, not a slider track: the same control the Level field on the page uses.
     controls::space(controls::kRowSpacing);
-    controls::field_label("New item power", pixels(kRandomizerLabelWidth));
+    controls::field_label("New Item Power", pixels(kRandomizerLabelWidth));
     ImGui::SetNextItemWidth(pixels(kRandomizerFieldWidth));
     ImGui::DragInt("##random_power", &state.grant.power, 10.0F, 0, kPowerSliderMaximum, "%d",
                    ImGuiSliderFlags_AlwaysClamp);
     controls::space(controls::kSectionSpacing);
-    if (controls::primary_button("Roll loadout", {pixels(kRandomizerButtonWidth), 0.0F})) {
+    if (controls::primary_button("Roll Loadout", {pixels(kRandomizerButtonWidth), 0.0F})) {
         record_edit(edit::randomize(*state.draft,
                                     state.catalog,
                                     state.character,
@@ -80,12 +81,14 @@ void draw_heading_row() noexcept {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float loadoutsWidth =
         ImGui::CalcTextSize(kLoadoutsLabel).x + (style.FramePadding.x * 2.0F);
+    const float optimizeWidth =
+        ImGui::CalcTextSize(kOptimizeLabel).x + (style.FramePadding.x * 2.0F);
     const float randomizeWidth =
         ImGui::CalcTextSize(kRandomizeLabel).x + (style.FramePadding.x * 2.0F);
     const float inventoryWidth =
         ImGui::CalcTextSize(kInventoryLabel).x + (style.FramePadding.x * 2.0F);
-    const float actions =
-        loadoutsWidth + randomizeWidth + inventoryWidth + (style.ItemSpacing.x * 2.0F);
+    const float actions = loadoutsWidth + optimizeWidth + randomizeWidth + inventoryWidth
+                          + (style.ItemSpacing.x * 3.0F);
     // The actions end where the side workspace begins rather than at the page edge: the workspace
     // lies over the page, and set at the edge they sat under it whenever an item was open.
     const float right =
@@ -97,6 +100,10 @@ void draw_heading_row() noexcept {
         open_loadouts();
     }
     ImGui::SameLine();
+    if (ImGui::SmallButton(kOptimizeLabel)) {
+        open_optimizer();
+    }
+    ImGui::SameLine();
     if (ImGui::SmallButton(kRandomizeLabel)) {
         ImGui::OpenPopup(kRandomizeTitle);
     }
@@ -106,6 +113,7 @@ void draw_heading_row() noexcept {
     }
     draw_randomizer_modal();
     draw_loadouts_modal();
+    draw_optimizer_modal();
 }
 
 } // namespace

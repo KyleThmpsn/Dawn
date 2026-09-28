@@ -36,6 +36,23 @@ static_assert(std::size(kStats) == std::tuple_size_v<Stats>, "Every character st
 bool materialize(Item& item, const Catalog& catalog);
 bool set_plug(Item& item, const Catalog& catalog, std::size_t lane, std::uint16_t plug, PlugScope scope);
 Stats item_stats(const Item& item, const Catalog& catalog);
+/**
+ * @return One item's stats as its tooltip shows them: each stored value through the curve of the
+ * item's own stat group. Summing these is what the character screen does for its armor totals.
+ */
+Stats shown_stats(const Item& item, const Catalog& catalog);
+/** @return The stats one plug adds, as stored, in `Stats` order. */
+Stats plug_stats(const CatalogItem& plug, const Catalog& catalog);
+/**
+ * @return The stat plugs one lane may take in place of the plug it holds, that plug included. An
+ * allocation lane draws on every allocation plug of its group the installed armor rolls; any other
+ * lane stays inside its own pool.
+ * @param current The plug in the lane now, or null for an empty lane, which only an allocation lane
+ *        can refill.
+ */
+std::vector<std::uint16_t> stat_plug_choices(const CatalogItem& definition, std::size_t lane, const CatalogItem* current, const Catalog& catalog);
+/** @return True when one lane of an armor definition is one of the four sockets its stats roll in. */
+bool allocation_lane(const CatalogItem& definition, std::size_t lane) noexcept;
 // Finds the closest supported stat-plug allocation and reports the values actually reached.
 bool adjust_stats(Item& item, const Catalog& catalog, const Stats& targets, Stats& achieved);
 // True when at least one of the item's stat-bearing sockets offers a different stat plug, which is
@@ -72,6 +89,7 @@ struct SavedPiece {
     std::int32_t level{};
     /** Plug fitted in each socket lane when saved, by definition hash, with zero for an empty lane. */
     std::vector<std::uint32_t> plugs;
+    friend bool operator==(const SavedPiece&, const SavedPiece&) = default;
 };
 /** One saved loadout: what one character had equipped, and the abilities of its subclass. */
 struct SavedLoadout {
@@ -82,6 +100,7 @@ struct SavedLoadout {
     std::array<SavedPiece, account::inventory::kEquipmentSlotCount> pieces{};
     /** Jump, grenade, super, melee and class ability entries, in the catalog's lane order. */
     std::array<std::uint8_t, std::tuple_size_v<decltype(CatalogItem::abilities)>> abilities{};
+    friend bool operator==(const SavedLoadout&, const SavedLoadout&) = default;
 };
 /** What equipping a saved loadout came to. */
 struct LoadoutResult {
@@ -91,6 +110,8 @@ struct LoadoutResult {
     std::size_t equipped{};
     /** Pieces that had gone and were made again from the build. */
     std::size_t recreated{};
+    /** Pieces still held whose saved plugs were fitted back in. */
+    std::size_t refitted{};
     /** Pieces skipped: gone from the build, not this class's, at the postmaster, or without room. */
     std::size_t unavailable{};
     /** New instance per slot of each piece made again, or zero, so the loadout can name it next time. */
@@ -118,13 +139,25 @@ enum class PieceState : std::uint8_t {
  * equip would skip.
  */
 PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept;
+/**
+ * @return How many socket lanes of one held item equipping its saved piece would change: each lane
+ * whose saved plug the build still carries and the item does not hold now. A lane saved empty, or
+ * whose plug has left the build, keeps what it has, and is not counted.
+ */
+std::size_t refit_count(const Item& item, const Catalog& catalog, const SavedPiece& piece) noexcept;
+/**
+ * @return True when equipping a loadout would change one of the character's ability choices. Only a
+ * loadout whose subclass is the one on now can, which is also the only case the equip puts them back.
+ */
+bool abilities_differ(const CharacterState& character, const Catalog& catalog, const SavedLoadout& loadout) noexcept;
 /** @return What one character has equipped now, with each piece's level and plugs, as a loadout. */
 SavedLoadout capture_loadout(const CharacterState& character, const Catalog& catalog, std::string name);
 /**
- * Equips a saved loadout on one character. A piece whose copy has gone is made again from the build,
- * at its saved level with its saved plugs; one the build no longer carries is skipped rather than
- * refusing the rest. The subclass's abilities are put back only when the saved subclass is the one
- * equipped, and only entries it offers, so the result is always one the game accepts.
+ * Equips a saved loadout on one character. A piece still held has its saved plugs fitted back in; a
+ * piece whose copy has gone is made again from the build, at its saved level with its saved plugs;
+ * one the build no longer carries is skipped rather than refusing the rest. The subclass's abilities
+ * are put back only when the saved subclass is the one equipped, and only entries it offers, so the
+ * result is always one the game accepts.
  * @param fallbackLevel Level a piece is made at when neither its save nor its slot gives one.
  * @return True when anything changed. `error` says why nothing did otherwise.
  */
@@ -132,6 +165,39 @@ bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t character, 
                    int fallbackLevel, LoadoutResult& result, std::string& error);
 bool randomize(Draft& draft, const Catalog& catalog, std::size_t character, const std::array<bool, account::inventory::kEquipmentSlotCount>& slots, int power, std::mt19937& random, std::string& error);
 bool prepare_commit(const Draft& draft, const Catalog& catalog, AccountState& output, std::string& error);
+
+/**
+ * One edit, kept so it can be taken back or made again: every character it changed, and the account
+ * stacks if it changed them, as they stood on either side of it. Only what the editor edits is kept:
+ * a character's identity, abilities, equipment and inventory, and the account's stacks. The rest of
+ * the account moves with the game, and taking an edit back never puts any of that back.
+ */
+struct EditStep {
+    struct Character {
+        std::uint64_t soid{};
+        CharacterState before, after;
+    };
+    std::vector<Character> characters;
+    /** True when the edit changed the account stacks, which the two lists then hold. */
+    bool stacks{};
+    std::vector<account::inventory::ProfileItem> stacksBefore, stacksAfter;
+};
+/**
+ * Captures the edit between two images of the account.
+ * @return False when the editor's own fields agree between them, which leaves nothing to take back.
+ * Revisions are not compared: the game renumbers what an apply changes, and that is no edit.
+ */
+bool capture_step(const AccountState& before, const AccountState& after, EditStep& step);
+/**
+ * Takes one edit back, or makes it again, in the draft. Each character the edit changed must still
+ * stand as the edit left it, or as it found it for a redo; one the game has moved on since is
+ * refused, and nothing is changed. A piece put back takes a new revision, as any other edit gives it,
+ * unless it is exactly the piece the game already holds.
+ * @param forward False to take the edit back, true to make it again.
+ * @return True when the draft now carries the step. The draft is dirty only if it differs from the
+ * committed account, so taking back an edit that was never applied can leave it clean.
+ */
+bool retrace(Draft& draft, const EditStep& step, bool forward, std::string& error);
 
 /**
  * Repairs a freshly loaded draft the installed build would refuse to publish.

@@ -22,19 +22,19 @@ constexpr const char* kCategoryLabels[]{"Weapons", "Armor", "Cosmetics", "Perks"
 static_assert(std::size(kCategoryLabels) == static_cast<std::size_t>(Category::count),
               "Every browsed category needs a tab label.");
 /** Search hints, one per category. */
-constexpr const char* kSearchHints[]{"Search weapons...",
-                                     "Search armor...",
-                                     "Search cosmetics...",
-                                     "Search perks...",
-                                     "Search materials..."};
+constexpr const char* kSearchHints[]{"Search Weapons...",
+                                     "Search Armor...",
+                                     "Search Cosmetics...",
+                                     "Search Perks...",
+                                     "Search Materials..."};
 /** Sort labels, in the order of the Sort values. */
-constexpr const char* kSortLabels[]{"By type", "Name A-Z", "Rarity"};
+constexpr const char* kSortLabels[]{"By Type", "Name A-Z", "Rarity"};
 static_assert(std::size(kSortLabels) == static_cast<std::size_t>(Sort::count),
               "Every sort order needs a label.");
 /** Rarity filter row that clears the filter; the tier rows take their names from art. */
-constexpr const char* kAnyRarityLabel = "All rarities";
+constexpr const char* kAnyRarityLabel = "All Rarities";
 /** Slot filter row that clears the filter; the slot rows take the editor's slot names. */
-constexpr const char* kAnySlotLabel = "All slots";
+constexpr const char* kAnySlotLabel = "All Slots";
 
 /** 380 authored pixels of height are needed before the tabs and the grid both fit. */
 constexpr float kCompactHeight = 380.0F;
@@ -49,11 +49,11 @@ constexpr float kTypeFilterWidth = 200.0F;
 constexpr float kRarityFilterWidth = 124.0F;
 constexpr float kSearchMinimumWidth = 160.0F;
 /** The two words on the row that are not selectors. */
-constexpr const char* kClassOnlyLabel = "This class only";
+constexpr const char* kClassOnlyLabel = "This Class Only";
 /** Heading for a run of results whose definitions name no type. */
 constexpr const char* kUntypedGroup = "Other";
 /** Sundial's name for the internal, placeholder and test definitions the catalog carries. */
-constexpr const char* kDummyItemsLabel = "Dummy items";
+constexpr const char* kDummyItemsLabel = "Dummy Items";
 constexpr const char* kResetLabel = "Reset";
 /** 64 bytes hold a type name with its result count. */
 constexpr std::size_t kTypePreviewCapacity = 64;
@@ -227,7 +227,7 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
 
     char preview[kTypePreviewCapacity]{};
     if (browse.type.empty()) {
-        (void)std::snprintf(preview, sizeof preview, "All types (%zu)", total);
+        (void)std::snprintf(preview, sizeof preview, "All Types (%zu)", total);
     } else {
         const auto found = types.find(browse.type);
         (void)std::snprintf(preview,
@@ -239,7 +239,7 @@ void draw_filter_row(const std::map<std::string, std::size_t>& types, std::size_
 
     if (controls::begin_picker("##type", preview, pixels(kTypeFilterWidth))) {
         char row[kTypePreviewCapacity]{};
-        (void)std::snprintf(row, sizeof row, "All types (%zu)", total);
+        (void)std::snprintf(row, sizeof row, "All Types (%zu)", total);
         if (controls::picker_row(row, browse.type.empty())) {
             browse.type.clear();
             model().results.key.clear();

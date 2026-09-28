@@ -246,10 +246,23 @@ it in the side panel. See [Sundial](#sundial) under Acknowledgements for what Da
 - Give, equip, lock, and randomize items; set power and quantities; edit sockets, with wider perk
   scopes for unconventional combinations.
 - Drag an armor stat bar to set a target. Letting go rolls the closest spread the game ships.
+- Save what a character has equipped as a **loadout**, with its perks, level, and subclass
+  abilities, and equip it again in one click. A piece that has gone is made again from the build,
+  and a piece still held gets its saved perks back. Rename, reorder, and copy loadouts to another
+  character of the same class. They are kept in `Dawn/loadouts.json`.
+- **Optimize Armor** works like Sundial's armor stat adjuster. Set the minimum stats you want, and it
+  refits the stat plugs on every piece you wear to reach them. Where that helps, it adds a
+  Masterwork or a stat mod, or swaps in better armor held by you or your other characters of the
+  same class. It previews each change, and **Adjust Armor** makes them all in one step. Locked
+  armor is never changed.
+- Ctrl+click items in the character inventory to lock, send, pull, set the power of, or remove
+  them together. Search reaches every character and the account, and takes filters such as
+  `is:exotic`, `is:locked`, and `power:>1000`.
+- **Undo** and **Redo** take back account edits and loadout changes, with Ctrl+Z and Ctrl+Y.
 
-Edits apply to the running game, with no restart. **Apply live** is on by default. Turn it off to
+Edits apply to the running game, with no restart. **Apply Live** is on by default. Turn it off to
 build a draft and commit it with **Apply**, or discard it with **Reload**. The editor checks
-inventory limits, one exotic per gear category, and whether the game changed the account under
+inventory limits, one Exotic per gear category, and whether the game changed the account under
 you. The first apply of a session backs up your player database to `Dawn/editor-backups`.
 
 Most edits show up in game within a moment. Character identity is committed straight away, but

@@ -272,7 +272,18 @@ bool ability_buckets_ready() noexcept {
 /** Publishes the ability buckets every configured subclass and ability selection publishes. */
 bool publish_ability_buckets(std::span<const abilities::Definition> definitions) noexcept {
     runtime::persistence::Transaction transaction;
-    if (!transaction.active() || !abilities::replace(definitions)) {
+    if (!transaction.active()) {
+        // A saved cache freezes the build snapshot, but these rows follow the account: the editor adds
+        // one for every subclass pick it commits, and the character encoder needs it at once. Refusing
+        // left a committed pick with no row, so the character could no longer encode. The rows are kept
+        // in memory only; the cache key covers every ability pick, so the next launch rebuilds them.
+        if (!abilities::replace(definitions)) {
+            return false;
+        }
+        runtime::ability_buckets::publish();
+        return true;
+    }
+    if (!abilities::replace(definitions)) {
         return false;
     }
     // Row count does not matter here, because a loadout with no subclass is a complete one.

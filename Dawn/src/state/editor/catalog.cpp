@@ -18,7 +18,10 @@ const ScaledStat* scaled_stat(const Catalog& catalog, std::uint16_t groupIndex, 
 
 std::int32_t display_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow,
                           std::int32_t investment) noexcept {
-    const auto* scaled = scaled_stat(catalog, groupIndex, statRow);
+    return display_stat(scaled_stat(catalog, groupIndex, statRow), investment);
+}
+
+std::int32_t display_stat(const ScaledStat* scaled, std::int32_t investment) noexcept {
     if (!scaled || scaled->curve.empty()) return investment;
     const auto& curve = scaled->curve;
     // An authored point wins outright; the curve is a lookup before it is an interpolation.

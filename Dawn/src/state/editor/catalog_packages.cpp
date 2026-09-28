@@ -758,19 +758,7 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             const auto id = item.detail.socketEntryListIndex;
             const int stock = stock_subclass_class(id);
             if (stock >= 0) item.characterClass = static_cast<std::uint8_t>(stock);
-            if (item.name.empty()) {
-                switch (item.definition.definitionHash) {
-                case 0x4F91DC97U: item.name = "Arcstrider"; break;
-                case 0xC99B33E9U: item.name = "Sentinel"; break;
-                case 0xB0554739U: item.name = "Striker"; break;
-                case 0xB920CE9AU: item.name = "Sunbreaker"; break;
-                case 0xD8B8D1FCU: item.name = "Gunslinger"; break;
-                case 0xC0483D8BU: item.name = "Nightstalker"; break;
-                case 0xCF88FEA5U: item.name = "Dawnblade"; break;
-                case 0x686A154AU: item.name = "Stormcaller"; break;
-                case 0xE7BC88B0U: item.name = "Voidwalker"; break;
-                }
-            }
+            // A stock subclass is named by its own item strings, as all gear is, from its class's bank.
             tables::IndexRow row{}; tables::Array entries{};
             if (!read_list(id, entries)) continue;
             if (stock < 0) {

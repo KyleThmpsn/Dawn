@@ -36,6 +36,25 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="editor_visual_tests.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\module.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\panel.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\controls.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\art.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\tooltip.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\card.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\presets.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\character.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\equipment.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\armory.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\inventory.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\icons.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\subclass.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\loadouts.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\pages\optimizer.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\inspector\inspector.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\inspector\perks.cpp" />
+    <ClCompile Include="..\src\core\ui\modules\loadout\inspector\stats.cpp" />
+    <ClCompile Include="..\src\client\hooks\bootflow\bc7_codec.cpp" />
     <ClCompile Include="..\src\core\ui\layout\credits\dawn_credits_badge.cpp" />
     <ClCompile Include="..\src\state\editor\catalog.cpp" />
     <ClCompile Include="..\src\state\editor\catalog_packages.cpp" />
@@ -49,6 +68,7 @@
     <ClCompile Include="..\src\state\build_data\abilities\ability_bucket_catalog.cpp" />
     <ClCompile Include="..\src\middleware\content\packages\tables\ability_pool_reader.cpp" />
     <ClCompile Include="..\src\state\editor\edit.cpp" />
+    <ClCompile Include="..\src\state\editor\armor_plan.cpp" />
     <ClCompile Include="..\src\middleware\datagen\family4\character\character_encoder.cpp" />
     <ClCompile Include="..\src\middleware\datagen\family4\character\equipment_summary_builder.cpp" />
     <ClCompile Include="..\src\state\account\account_state.cpp" />

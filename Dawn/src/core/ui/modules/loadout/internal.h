@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "state/editor/armor_plan.h"
 #include "state/editor/edit.h"
 
 namespace dawn::core::ui::modules::loadout::internal {
@@ -49,6 +50,15 @@ inline constexpr int kPowerSliderMaximum = 15000;
 [[nodiscard]] int level_of(int power) noexcept;
 /** Armor stat plugs never exceed this, so the target sliders stop there. */
 inline constexpr int kMaximumStatTarget = 50;
+/**
+ * A line of character stats, wherever the editor sets one: the icon's edge, the gap between a
+ * stat's parts, the gap between two stats, and the letters a stat keeps when the build offers no
+ * icon to show it by. Sundial draws 15px icons, 4px between parts and 10px between stats.
+ */
+inline constexpr float kStatIconExtent = 15.0F;
+inline constexpr float kStatPartGap = 4.0F;
+inline constexpr float kStatGap = 10.0F;
+inline constexpr std::size_t kStatAbbreviation = 3;
 
 /**
  * Layout taken from Sundial, so the in-game editor reads as the same tool.
@@ -253,8 +263,85 @@ struct Loadouts {
     std::vector<edit::SavedLoadout> entries;
     /** Name typed for the next loadout saved. */
     char name[kLoadoutNameCapacity]{};
+    /** Loadout the sheet has chosen, whose actions it shows, or -1. */
+    int chosen{-1};
+    /** Set when the sheet opens, so its first frame chooses the loadout that is on now. */
+    bool chooseOnOpen{};
+    /** Set when a row was chosen by something other than the pointer, so the list brings it into view. */
+    bool reveal{};
     /** Loadout whose Delete was pressed once and now asks to be confirmed, or -1. */
     int pendingDelete{-1};
+    /** Loadout whose Save Over was pressed once and now asks to be confirmed, or -1. */
+    int pendingSave{-1};
+    /** Loadout being renamed in place, or -1, and the name being typed for it. */
+    int renaming{-1};
+    char rename[kLoadoutNameCapacity]{};
+    /** Set when a rename starts, so its field takes the keys on the frame it first appears. */
+    bool focusRename{};
+};
+
+/**
+ * Edits the player can take back and make again. An edit is recorded once it is finished, which for a
+ * control the player holds is when it is let go, against the account as it stood before the edit.
+ */
+struct History {
+    /**
+     * One step the player can take back: an edit to the account, a change to the saved loadouts, or
+     * both, as equipping a loadout that makes pieces again points the loadout at the new copies.
+     */
+    struct Step {
+        edit::EditStep account;
+        /** True when the step changed the saved loadouts, which the two lists then hold whole. */
+        bool loadouts{};
+        std::vector<edit::SavedLoadout> loadoutsBefore;
+        std::vector<edit::SavedLoadout> loadoutsAfter;
+    };
+    /** The draft as it stood after the last recorded edit, which the next one is measured from. */
+    std::unique_ptr<state::AccountState> baseline;
+    std::vector<Step> undo;
+    std::vector<Step> redo;
+    /** Set by an edit and cleared once it has been recorded. */
+    bool pending{};
+    /**
+     * Saved loadouts as they stood before a change an account edit made to them this frame, such as
+     * an equip pointing a loadout at the copies it made. The edit's own step takes the change with it.
+     */
+    bool loadoutsPending{};
+    std::vector<edit::SavedLoadout> loadoutsBefore;
+};
+
+/**
+ * The armor optimizer, which works as Sundial's stat adjuster does: the player sets the least of each
+ * stat, and a plan refits every piece's stat plugs, and swaps pieces where that helps, to come closest.
+ */
+struct Optimizer {
+    /** Least of each stat the armor should reach, in `edit::Stats` order; zero leaves a stat free. */
+    edit::Stats targets{};
+    /** What a plan may do besides refitting the armor on now. */
+    edit::ArmorOptions options{};
+    /**
+     * One plan worked out on a worker. The input and minimums are fixed when it starts, so the worker
+     * and the sheet can both read them; the plan is the worker's until `done` is set.
+     */
+    struct Job {
+        std::shared_ptr<const edit::ArmorInput> input;
+        edit::Stats targets{};
+        std::atomic_bool cancel{false};
+        std::atomic_bool done{false};
+        edit::ArmorPlan plan;
+    };
+    /** What plans are worked out from, and a digest of the armor and options it was taken from. */
+    std::shared_ptr<const edit::ArmorInput> input;
+    std::string inputKey;
+    /** The plan last found, with the input and minimums it answers. */
+    edit::ArmorPlan plan;
+    std::shared_ptr<const edit::ArmorInput> planInput;
+    edit::Stats planTargets{};
+    /** The plan being worked out, if any. */
+    std::shared_ptr<Job> job;
+    /** The minimums last seen, and when they last changed, so a plan waits for them to settle. */
+    edit::Stats seenTargets{};
+    double changedAt{};
 };
 
 /**
@@ -273,6 +360,11 @@ struct Model {
 
     /** Last outcome shown in the action bar: what an edit or an apply came to. */
     std::string status;
+    /**
+     * The outcome standing when a sheet opened. It spoke of something done before the sheet, so the
+     * sheet does not repeat it as though it were what the sheet's own action came to.
+     */
+    std::string statusAtSheet;
     /** True when that outcome was a refusal, which the bar sets apart from a result. */
     bool statusFailed{};
     /**
@@ -307,6 +399,12 @@ struct Model {
     StatTargets targets;
     Randomizer randomizer;
     Loadouts loadouts;
+    History history;
+    Optimizer optimizer;
+    /** Items picked on the character inventory page for one action on all of them, by instance. */
+    std::vector<std::uint64_t> picked;
+    /** Power the selection bar sets every selected piece of gear to. */
+    int pickPower{1050};
 
     /**
      * The icon sweep, which reads every package's entry table and so runs on its own thread, and
@@ -370,6 +468,18 @@ struct Model {
 /** @return The character the pages are editing. Only called once a draft exists. */
 [[nodiscard]] state::CharacterState& character() noexcept;
 
+/** @return One character's name as the tabs write it, such as "Hunter 2". */
+[[nodiscard]] std::string character_label(std::size_t index) noexcept;
+
+/**
+ * Draws a sheet's outcome line: what its last action came to, once something has been done since
+ * the sheet opened, in the refused colour when it was refused. The sheet lies over the bar, so it says
+ * here what the bar would say.
+ * @param forced A standing problem to show in place of the outcome, such as a file that cannot be
+ * read, or null.
+ */
+void draw_sheet_outcome(const char* forced = nullptr) noexcept;
+
 /**
  * @return The character's item with this instance id, or null when it owns none.
  * @param instance Owned instance id.
@@ -432,6 +542,13 @@ void reset() noexcept;
 void draw_character_fields() noexcept;
 /** The equipped armor stat totals, drawn as one row under the loadout heading. */
 void draw_armor_totals() noexcept;
+
+/**
+ * Draws six stat totals on one line at the cursor, in the order the game lists them: each stat's
+ * mark, then its name when `named`, then its value. The Characters page names them; a surface short
+ * of room leaves the names under the pointer. Every line of stats in the editor is this one.
+ */
+void draw_stat_totals(const edit::Stats& totals, bool named) noexcept;
 
 /** The equipped loadout cards, drawn below the identity fields on the Characters view. */
 void draw_equipment() noexcept;
@@ -499,6 +616,47 @@ void open_loadouts() noexcept;
 
 /** Draws the saved loadouts sheet once it has been opened. */
 void draw_loadouts_modal() noexcept;
+
+/** Opens the armor optimizer sheet, from the scope that then draws it. */
+void open_optimizer() noexcept;
+
+/** Draws the armor optimizer sheet once it has been opened. */
+void draw_optimizer_modal() noexcept;
+
+/**
+ * Takes the last edit back, or makes the last one taken back again, and publishes the result as any
+ * edit is published.
+ * @param forward False to undo, true to redo.
+ */
+void retrace_edit(bool forward) noexcept;
+
+/**
+ * @return What the next undo or redo would change, such as "Hunter 1", or empty when there is none.
+ * @param forward False for the undo, true for the redo.
+ */
+[[nodiscard]] std::string history_subject(bool forward) noexcept;
+
+/** Records an edit finished this frame, once no control is still held. Called after every widget. */
+void record_history() noexcept;
+
+/**
+ * Records a change to the saved loadouts, already written, as a step of its own.
+ * @param before The saved loadouts as they stood before the change.
+ */
+void record_loadouts_change(std::vector<edit::SavedLoadout> before) noexcept;
+
+/**
+ * Notes that an account edit made this frame also changed the saved loadouts, so the edit's step
+ * takes the change with it and one undo takes back both.
+ * @param before The saved loadouts as they stood before the change.
+ */
+void note_loadouts_change(std::vector<edit::SavedLoadout> before) noexcept;
+
+/** @return True when the character inventory page has this item picked. */
+[[nodiscard]] bool is_picked(std::uint64_t instance) noexcept;
+
+/** Picks one item on the character inventory page, or lets it go again. */
+void toggle_pick(std::uint64_t instance) noexcept;
 
 /**
  * Draws every socket of one owned item as an editable row: the fitted plug's icon, its name, its
