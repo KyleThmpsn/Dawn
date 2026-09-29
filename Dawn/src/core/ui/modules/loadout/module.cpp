@@ -2,13 +2,18 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
 #include <imgui.h>
 #include <string_view>
 
 #include "../registry/ui_module_registry.h"
 #include "../ui_module_descriptor.h"
+#include "art.h"
 #include "internal.h"
 #include "loadout.h"
+#include "presets.h"
 #include "preview.h"
 #include "state/account/inventory/placement.h"
 #include "state/equipment/light/definition.h"
@@ -24,6 +29,58 @@ constexpr std::string_view kDisplayName = "Loadout";
 
 registry::PageRegistration g_page;
 
+/** 256 bytes hold anything the editor copies, such as a tag or an item's name. */
+constexpr std::size_t kCopyCapacity = 256;
+
+/** The one copy waiting on the game window, and what the last one came to. */
+struct Clipboard {
+    SRWLOCK lock{SRWLOCK_INIT};
+    std::array<char, kCopyCapacity> text{};
+    std::size_t length{};
+    bool waiting{};
+    bool answered{};
+    bool copied{};
+};
+
+Clipboard g_clipboard;
+
+/**
+ * Replaces the clipboard's contents with the text, owned by the game window.
+ * @param text UTF-8, handed to Windows as UTF-16 so any name survives the copy.
+ * @return True only when Windows took the memory.
+ */
+[[nodiscard]] bool write_clipboard(HWND owner, std::string_view text) noexcept {
+    if (owner == nullptr || IsWindow(owner) == FALSE || text.empty()) {
+        return false;
+    }
+    const int units = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (units <= 0) {
+        return false;
+    }
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (static_cast<SIZE_T>(units) + 1U) * sizeof(wchar_t));
+    if (memory == nullptr) {
+        return false;
+    }
+    auto* wide = static_cast<wchar_t*>(GlobalLock(memory));
+    if (wide == nullptr) {
+        GlobalFree(memory);
+        return false;
+    }
+    (void)MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide, units);
+    wide[units] = L'\0';
+    GlobalUnlock(memory);
+    if (OpenClipboard(owner) == FALSE) {
+        GlobalFree(memory);
+        return false;
+    }
+    const bool taken = EmptyClipboard() != FALSE && SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
+    CloseClipboard();
+    if (!taken) {
+        GlobalFree(memory);
+    }
+    return taken;
+}
+
 } // namespace
 
 namespace internal {
@@ -35,15 +92,26 @@ std::unique_ptr<Model> g_model;
 /** Nothing has happened yet, so the bar shows only the sync state until an apply reports. */
 constexpr const char* kIdleStatus = "";
 /** Shown when the catalog worker throws rather than reporting its own reason. */
-constexpr const char* kCatalogFailure = "Could not load the item catalog.";
+constexpr const char* kCatalogFailure = "Can't load the item catalog.";
 /** Shown when an edit escapes as an exception, which leaves the account untouched. */
-constexpr const char* kFrameFailure = "That action failed; the account is unchanged.";
+constexpr const char* kFrameFailure = "That action failed. Nothing changed.";
 /** 500 ms between account divergence checks, which copies the account to compare it. */
 constexpr std::uint64_t kDivergenceCheckIntervalMs = 500;
 /** An apply nobody was signed in for is re-offered to the game for this long. */
 constexpr std::uint64_t kRepublishWindowMs = 60000;
 /** Shown once a saved-only apply finally reaches a signed-in peer. */
 constexpr const char* kLateApplied = "Applied in game.";
+/** 64 bytes hold where a sent item went: a class name and a one-digit character slot. */
+constexpr std::size_t kSentMessageCapacity = 64;
+/**
+ * Edits kept for undo. A step holds only the characters it changed, about 90 KB each, so this many
+ * is a few megabytes at the most.
+ */
+constexpr std::size_t kHistoryDepth = 30;
+/** 128 bytes hold what an undo says it did, with every character on the account named. */
+constexpr std::size_t kHistoryMessageCapacity = 128;
+/** 32 bytes hold a character's name as the tabs write it: a class name and a one-digit slot. */
+constexpr std::size_t kCharacterLabelCapacity = 32;
 
 /**
  * Notices when the game changed the account under an editor that is not the one editing it.
@@ -70,6 +138,7 @@ void poll_account_divergence() noexcept {
             // line, and saying this over a refusal would report that refusal as applied.
             if (!state.draft->dirty) {
                 state.status = kLateApplied;
+                state.statusFailed = false;
             }
         }
     }
@@ -84,6 +153,11 @@ void poll_account_divergence() noexcept {
     }
     state.draft->before = account;
     state.draft->after = account;
+    // What the game changed is no edit of the player's, so the next edit is measured from here.
+    // The steps already kept stay: each checks the characters it touches before it is retraced.
+    if (state.history.baseline) {
+        *state.history.baseline = account;
+    }
     state.accountDiverged = false;
     state.character = (std::min)(state.character,
                                  account.characterCount != 0 ? account.characterCount - 1 : 0);
@@ -100,7 +174,15 @@ void consume_queued_apply() noexcept {
         return;
     }
     bool live = false;
-    if (!edit::apply(*state.draft, state.catalog, state.status, live)) {
+    const bool applied = edit::apply(*state.draft, state.catalog, state.status, live);
+    state.statusFailed = !applied;
+    // An edit's own note, such as what a loadout could not put back, leads the apply's outcome
+    // rather than being written over by it. It belongs to this apply whichever way it went.
+    if (applied && !state.editNote.empty()) {
+        state.status = state.editNote + " " + state.status;
+    }
+    state.editNote.clear();
+    if (!applied) {
         // A refused apply can mean the game moved the account on. Check that before the next frame
         // rather than waiting out the poll interval, so the banner and the message agree.
         state.lastDivergenceCheckTick = 0;
@@ -110,6 +192,65 @@ void consume_queued_apply() noexcept {
     // would sit above an apply that already resolved it.
     state.accountDiverged = false;
     state.republishUntilTick = live ? 0 : GetTickCount64() + kRepublishWindowMs;
+    // The commit renumbers what it changed. That is no edit, so the next one is measured from here;
+    // an edit still being made keeps the image it started from.
+    if (state.history.baseline && !state.history.pending) {
+        *state.history.baseline = state.draft->after;
+    }
+}
+
+/**
+ * @return What one step changed, named as the tabs name the characters, such as "Hunter 1 and the
+ * account items" or "your saved loadouts".
+ */
+[[nodiscard]] std::string step_subject(const History::Step& step) noexcept {
+    const state::AccountState& account = model().draft->after;
+    std::string subject;
+    const std::size_t parts =
+        step.account.characters.size() + (step.account.stacks ? 1U : 0U) + (step.loadouts ? 1U : 0U);
+    std::size_t written = 0;
+    const auto join = [&](const std::string& part) {
+        if (written != 0) {
+            subject += written + 1 == parts ? " and " : ", ";
+        }
+        subject += part;
+        ++written;
+    };
+    for (const edit::EditStep::Character& change : step.account.characters) {
+        std::string name = "a character no longer here";
+        for (std::size_t c = 0; c < account.characterCount; ++c) {
+            if (account.characters[c].soid == change.soid) {
+                name = character_label(c);
+            }
+        }
+        join(name);
+    }
+    if (step.account.stacks) {
+        join("the account items");
+    }
+    if (step.loadouts) {
+        join("your saved loadouts");
+    }
+    return subject;
+}
+
+/** Keeps one finished step for undo, which leaves nothing to redo. */
+void keep_step(History::Step step) noexcept {
+    History& history = model().history;
+    history.undo.push_back(std::move(step));
+    if (history.undo.size() > kHistoryDepth) {
+        history.undo.erase(history.undo.begin());
+    }
+    history.redo.clear();
+}
+
+/** The saved loadouts sheet lets go of its choice and anything it was asking, as the list changed under it. */
+void reset_loadouts_sheet() noexcept {
+    Loadouts& loadouts = model().loadouts;
+    loadouts.chosen = -1;
+    loadouts.pendingDelete = -1;
+    loadouts.pendingSave = -1;
+    loadouts.renaming = -1;
 }
 
 } // namespace
@@ -124,6 +265,14 @@ bool live() noexcept {
 
 state::CharacterState& character() noexcept {
     return model().draft->after.characters[model().character];
+}
+
+std::string character_label(std::size_t index) noexcept {
+    const state::AccountState& account = model().draft->after;
+    char label[kCharacterLabelCapacity]{};
+    (void)std::snprintf(
+        label, sizeof label, "%s %zu", art::class_name(account.characters[index].characterClass), index + 1);
+    return label;
 }
 
 edit::Item* find_owned_item(std::uint64_t instance) noexcept {
@@ -178,6 +327,30 @@ bool erase_owned_item(std::uint64_t instance) noexcept {
     return false;
 }
 
+bool send_item(std::uint64_t instance, std::size_t target) noexcept {
+    Model& state = model();
+    const bool sent =
+        edit::transfer(*state.draft, state.catalog, state.character, target, instance, state.status);
+    if (sent) {
+        const state::AccountState& account = state.draft->after;
+        char message[kSentMessageCapacity]{};
+        (void)std::snprintf(message,
+                            sizeof message,
+                            "Sent to %s %zu.",
+                            art::class_name(account.characters[target].characterClass),
+                            target + 1);
+        state.status = message;
+        // Carried into the apply, which otherwise says only that something was applied.
+        state.editNote = message;
+        // The item is no longer on this character, so a pane bound to it has nothing to show.
+        if (state.selection.instanceSoid == instance) {
+            clear_selection();
+        }
+    }
+    record_edit(sent);
+    return sent;
+}
+
 int power_of(int level) noexcept {
     std::int32_t power = 0;
     return state::equipment::light::item_power(level, power) ? power : 0;
@@ -193,6 +366,7 @@ void mark_changed(bool publish) noexcept {
         return;
     }
     state.draft->dirty = true;
+    state.history.pending = true;
     // Armor stat targets belong to whichever item was inspected, and an edit can replace it.
     state.targets.owner = 0;
     if (publish && state.applyInstantly) {
@@ -201,6 +375,8 @@ void mark_changed(bool publish) noexcept {
 }
 
 void record_edit(bool succeeded) noexcept {
+    // The edit wrote its own outcome into the status; a refusal is marked so the bar sets it apart.
+    model().statusFailed = !succeeded;
     if (succeeded) {
         mark_changed(true);
     }
@@ -232,10 +408,151 @@ void reload_account() noexcept {
     // A discarded draft has no apply left to report on, so the retry must not speak for it later.
     state.republishUntilTick = 0;
     state.status = kIdleStatus;
+    state.statusFailed = false;
+    state.editNote.clear();
     // An account saved before the row-generation fix cannot be published until it is repaired.
     // Staging it here means opening the page is enough; instant mode then commits it at once.
     if (edit::normalize(*state.draft, state.status) && state.applyInstantly) {
         state.applyRequested = true;
+    }
+    // A reload discards the draft the kept edits were made in, so they go with it. The repair above
+    // is no edit of the player's, and is not one to take back.
+    state.history.undo.clear();
+    state.history.redo.clear();
+    state.history.pending = false;
+    state.history.loadoutsPending = false;
+    state.history.loadoutsBefore.clear();
+    state.history.baseline = std::make_unique<state::AccountState>(state.draft->after);
+    state.picked.clear();
+}
+
+void record_history() noexcept {
+    Model& state = model();
+    History& history = state.history;
+    if (!state.draft) {
+        return;
+    }
+    if (!history.baseline) {
+        history.baseline = std::make_unique<state::AccountState>(state.draft->after);
+        history.pending = false;
+        return;
+    }
+    // A control still held is an edit still being made: a drag records once, when it is let go.
+    if ((!history.pending && !history.loadoutsPending) || ImGui::IsAnyItemActive()) {
+        return;
+    }
+    History::Step step;
+    const bool account = history.pending && edit::capture_step(*history.baseline, state.draft->after, step.account);
+    // A change the edit made to the saved loadouts goes with it, so one undo takes back both.
+    if (history.loadoutsPending) {
+        step.loadouts = true;
+        step.loadoutsBefore = std::move(history.loadoutsBefore);
+        step.loadoutsAfter = state.loadouts.entries;
+    }
+    history.pending = false;
+    history.loadoutsPending = false;
+    history.loadoutsBefore.clear();
+    if (account || step.loadouts) {
+        keep_step(std::move(step));
+    }
+    *history.baseline = state.draft->after;
+}
+
+void record_loadouts_change(std::vector<edit::SavedLoadout> before) noexcept {
+    History::Step step;
+    step.loadouts = true;
+    step.loadoutsBefore = std::move(before);
+    step.loadoutsAfter = model().loadouts.entries;
+    keep_step(std::move(step));
+}
+
+void note_loadouts_change(std::vector<edit::SavedLoadout> before) noexcept {
+    History& history = model().history;
+    // The first change of the frame holds the list as it stood before any of them.
+    if (!history.loadoutsPending) {
+        history.loadoutsBefore = std::move(before);
+        history.loadoutsPending = true;
+    }
+}
+
+std::string history_subject(bool forward) noexcept {
+    const History& history = model().history;
+    const std::vector<History::Step>& steps = forward ? history.redo : history.undo;
+    return steps.empty() || !model().draft ? std::string() : step_subject(steps.back());
+}
+
+void retrace_edit(bool forward) noexcept {
+    Model& state = model();
+    History& history = state.history;
+    // An edit made this frame, not yet recorded, is recorded first, so it is the one an undo takes.
+    record_history();
+    std::vector<History::Step>& from = forward ? history.redo : history.undo;
+    std::vector<History::Step>& onto = forward ? history.undo : history.redo;
+    if (!state.draft || from.empty()) {
+        return;
+    }
+    const History::Step& step = from.back();
+    const std::string subject = step_subject(step);
+    std::string refused;
+    // A step is taken back whole or not at all: its saved loadouts are checked before its account
+    // edit is retraced, and the draft is put back if the loadouts cannot then be written.
+    if (step.loadouts && state.loadouts.entries != (forward ? step.loadoutsBefore : step.loadoutsAfter)) {
+        refused = forward ? "Can't redo: your saved loadouts changed."
+                          : "Can't undo: your saved loadouts changed.";
+    }
+    std::unique_ptr<state::AccountState> draftBefore;
+    const bool dirtyBefore = state.draft->dirty;
+    if (refused.empty() && (!step.account.characters.empty() || step.account.stacks)) {
+        draftBefore = std::make_unique<state::AccountState>(state.draft->after);
+        (void)edit::retrace(*state.draft, step.account, forward, refused);
+    }
+    if (!refused.empty()) {
+        // The account has moved past the step, so it will never retrace; left on top, it would stand
+        // in front of every step under it.
+        from.pop_back();
+        state.status = refused + (forward ? " Removed from Redo." : " Removed from Undo.");
+        state.statusFailed = true;
+        return;
+    }
+    if (step.loadouts) {
+        std::vector<edit::SavedLoadout> previous = state.loadouts.entries;
+        state.loadouts.entries = forward ? step.loadoutsAfter : step.loadoutsBefore;
+        if (!presets::save(state.loadouts.entries)) {
+            state.loadouts.entries = std::move(previous);
+            if (draftBefore) {
+                state.draft->after = *draftBefore;
+                state.draft->dirty = dirtyBefore;
+            }
+            state.status = forward ? "Can't write Dawn/loadouts.json. Nothing redone."
+                                   : "Can't write Dawn/loadouts.json. Nothing undone.";
+            state.statusFailed = true;
+            return;
+        }
+        reset_loadouts_sheet();
+    }
+    onto.push_back(std::move(from.back()));
+    from.pop_back();
+    // The retrace is not an edit of its own, so nothing is recorded for it.
+    if (history.baseline) {
+        *history.baseline = state.draft->after;
+    }
+    history.pending = false;
+    // Whatever the panes were bound to may have gone with the edit.
+    state.targets.owner = 0;
+    if (state.selection.instanceSoid != 0 && find_owned_item(state.selection.instanceSoid) == nullptr) {
+        clear_selection();
+    }
+    char message[kHistoryMessageCapacity]{};
+    (void)std::snprintf(message,
+                        sizeof message,
+                        forward ? "Redid the change to %s." : "Undid the last change to %s.",
+                        subject.c_str());
+    state.status = message;
+    state.statusFailed = false;
+    // A retrace that lands back on the account the game holds leaves nothing to apply.
+    if (state.draft->dirty) {
+        state.editNote = message;
+        state.applyRequested = state.applyInstantly;
     }
 }
 
@@ -277,6 +594,31 @@ void reset() noexcept {
     g_model.reset();
 }
 
+bool request_copy(std::string_view text) noexcept {
+    if (text.empty() || text.size() > kCopyCapacity) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool queued = !g_clipboard.waiting;
+    if (queued) {
+        std::memcpy(g_clipboard.text.data(), text.data(), text.size());
+        g_clipboard.length = text.size();
+        g_clipboard.waiting = true;
+        g_clipboard.answered = false;
+    }
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    return queued;
+}
+
+bool take_copy_result(bool& copied) noexcept {
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool answered = g_clipboard.answered;
+    copied = g_clipboard.copied;
+    g_clipboard.answered = false;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    return answered;
+}
+
 } // namespace internal
 
 /** @return True when the Core Loadout page owns its registry slot. */
@@ -297,6 +639,31 @@ bool initialize() noexcept {
 void shutdown() noexcept {
     g_page.release(&internal::reset);
     preview::shutdown();
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    g_clipboard.waiting = false;
+    g_clipboard.answered = false;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+}
+
+void dispatch_pending_copy(HWND owner) noexcept {
+    std::array<char, kCopyCapacity> text{};
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool waiting = g_clipboard.waiting;
+    const std::size_t length = g_clipboard.length;
+    if (waiting) {
+        text = g_clipboard.text;
+    }
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    if (!waiting) {
+        return;
+    }
+    // Windows is called with no lock held, since emptying the clipboard messages its last owner.
+    const bool copied = write_clipboard(owner, {text.data(), length});
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    g_clipboard.waiting = false;
+    g_clipboard.answered = true;
+    g_clipboard.copied = copied;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
 }
 
 /** Frame entry. An edit that throws leaves the account and the draft as they were. */
@@ -307,9 +674,12 @@ void draw() noexcept {
     try {
         internal::poll_account_divergence();
         internal::draw();
+        // An edit is recorded against the image before it, so this runs before the apply renumbers.
+        internal::record_history();
         internal::consume_queued_apply();
     } catch (...) {
         internal::model().status = internal::kFrameFailure;
+        internal::model().statusFailed = true;
     }
 }
 

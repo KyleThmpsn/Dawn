@@ -10,11 +10,24 @@
 #include <imgui_internal.h>
 
 #include "../../scaling/dpi/ui_dpi_scaling.h"
+#include "preview.h"
 
 namespace dawn::core::ui::modules::loadout::controls {
 namespace {
 
 using scaling::dpi::pixels;
+
+/**
+ * The game's own interface images the controls are drawn with, in place of shapes drawn by hand.
+ * They are bare images in the interface package that no record points at, so they are named by tag.
+ */
+constexpr std::uint32_t kDownArrowTag = 0x80BC61F1U;
+constexpr std::uint32_t kEmptyBoxTag = 0x80BC6DB5U;
+constexpr std::uint32_t kCheckedBoxTag = 0x80BC6DB8U;
+/** Share of a checkbox's frame-height square its box image leaves clear round itself. */
+constexpr float kCheckboxInset = 0.12F;
+/** A checkbox brightens from this alpha to full under the pointer, as a tab's label does. */
+constexpr float kCheckboxRestAlpha = 0.85F;
 
 /** 8 authored pixels pad a banner away from its border. This is a text inset, not a card gap. */
 constexpr float kBannerPadding = 8.0F;
@@ -22,7 +35,6 @@ constexpr float kBannerPadding = 8.0F;
 constexpr float kBannerBorderThickness = 1.0F;
 /** Tab geometry: one clear pointer target, underlined while it owns the page. */
 constexpr float kTabRailInset = 10.0F;
-constexpr float kTabRailHeight = 2.0F;
 /** A hovered tab shows its rail at this alpha: a preview under the pointer, not a press. */
 constexpr float kTabHoverAlpha = 0.45F;
 /** Letter spacing of the capitals a tab and a section heading are set in. */
@@ -34,14 +46,18 @@ constexpr float kSectionLabelAlpha = 0.85F;
 constexpr float kSectionRuleAlpha = 0.18F;
 /** Picker: the chevron in the field, the list's own padding and row gap, the rail on the choice. */
 constexpr float kPickerChevronWidth = 8.0F;
-constexpr float kPickerChevronHeight = 4.0F;
 constexpr float kPickerChevronInset = 12.0F;
 constexpr float kPickerChevronAlpha = 0.7F;
 constexpr float kPickerListPadding = 6.0F;
 constexpr float kPickerRowGap = 1.0F;
 constexpr float kPickerRowIndent = 6.0F;
-constexpr float kPickerRailWidth = 2.0F;
 constexpr float kPickerHairline = 1.0F;
+/**
+ * A menu: the room round its words. A row's fill reaches half the item spacing past its words, so
+ * with the spacing at twice this room every row lights the menu from hairline to hairline.
+ */
+constexpr float kMenuPaddingX = 10.0F;
+constexpr float kMenuPaddingY = 4.0F;
 /** A primary action is the game's white button, so its label has to go dark on it. */
 constexpr ImVec4 kPrimaryFill{0.92F, 0.92F, 0.92F, 1.0F};
 constexpr ImVec4 kPrimaryFillHovered{1.0F, 1.0F, 1.0F, 1.0F};
@@ -64,13 +80,6 @@ bool primary_button(const char* label, ImVec2 size) noexcept {
     const bool pressed = ImGui::Button(label, size);
     ImGui::PopStyleColor(4);
     return pressed;
-}
-
-bool disclosure(const char* label) noexcept {
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4{});
-    const bool open = ImGui::CollapsingHeader(label);
-    ImGui::PopStyleColor();
-    return open;
 }
 
 namespace {
@@ -128,6 +137,45 @@ float tab_width(const char* label) noexcept {
     return spaced_capitals(shouted(visible_label(label)), {}, 0, true);
 }
 
+bool checkbox(const char* label, bool* value) noexcept {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const std::string text = visible_label(label);
+    const float box = ImGui::GetFrameHeight();
+    const float textWidth = text.empty() ? 0.0F : style.ItemInnerSpacing.x + ImGui::CalcTextSize(text.c_str()).x;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(label, {box + textWidth, box});
+    if (pressed) {
+        *value = !*value;
+    }
+    const float alpha = ImGui::IsItemHovered() ? 1.0F : kCheckboxRestAlpha;
+    const float inset = box * kCheckboxInset;
+    if (!preview::draw_fitted(*value ? kCheckedBoxTag : kEmptyBoxTag,
+                              {at.x + inset, at.y + inset},
+                              {box - (inset * 2.0F), box - (inset * 2.0F)},
+                              pixels(1.0F),
+                              2.0F,
+                              ImGui::GetColorU32(ImGuiCol_Text, alpha))) {
+        // Until the game's box is read in, a hairline square keeps the control from reading as blank.
+        ImGui::GetWindowDrawList()->AddRect({at.x + inset, at.y + inset},
+                                            {at.x + box - inset, at.y + box - inset},
+                                            ImGui::GetColorU32(ImGuiCol_Text, alpha));
+    }
+    if (!text.empty()) {
+        ImGui::GetWindowDrawList()->AddText({at.x + box + style.ItemInnerSpacing.x, at.y + style.FramePadding.y},
+                                            ImGui::GetColorU32(ImGuiCol_Text),
+                                            text.c_str());
+    }
+    return pressed;
+}
+
+float spaced(const char* text, ImVec2 at, ImU32 color) noexcept {
+    return spaced_capitals(shouted(text), at, color, false);
+}
+
+float spaced_width(const char* text) noexcept {
+    return spaced_capitals(shouted(text), {}, 0, true);
+}
+
 bool tab(const char* label, bool active, float width) noexcept {
     // A themed Button answers a hover with an opaque panel fill over the whole row and leaves an
     // inactive label muted, which reads as a pressed button rather than a tab. The row is drawn
@@ -149,7 +197,7 @@ bool tab(const char* label, bool active, float width) noexcept {
                     false);
     // The game underlines the open tab in white, and a tab under the pointer in a fainter white.
     if (active || hovered) {
-        draw->AddRectFilled({origin.x + pixels(kTabRailInset), corner.y - pixels(kTabRailHeight)},
+        draw->AddRectFilled({origin.x + pixels(kTabRailInset), corner.y - pixels(kRailWidth)},
                             {corner.x - pixels(kTabRailInset), corner.y},
                             ImGui::GetColorU32(ImGuiCol_Text, active ? 1.0F : kTabHoverAlpha));
     }
@@ -162,7 +210,6 @@ bool begin_picker(const char* id, const char* preview, float width) noexcept {
     // ground, room around its rows, and rows that centre their text.
     const ImVec2 at = ImGui::GetCursorScreenPos();
     const float height = ImGui::GetFrameHeight();
-    ImDrawList* draw = ImGui::GetWindowDrawList();
     ImGui::SetNextItemWidth(width);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
                         ImVec2{pixels(kPickerListPadding), pixels(kPickerListPadding)});
@@ -172,13 +219,11 @@ bool begin_picker(const char* id, const char* preview, float width) noexcept {
     ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, pixels(kPickerHairline));
     const bool open = ImGui::BeginCombo(
         id, preview, ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_HeightLarge);
-    const float half = pixels(kPickerChevronWidth) * 0.5F;
-    const float rise = pixels(kPickerChevronHeight);
-    const ImVec2 centre{at.x + width - pixels(kPickerChevronInset), at.y + (height * 0.5F)};
-    draw->AddTriangleFilled({centre.x - half, centre.y - (rise * 0.5F)},
-                            {centre.x + half, centre.y - (rise * 0.5F)},
-                            {centre.x, centre.y + (rise * 0.5F)},
-                            ImGui::GetColorU32(ImGuiCol_Text, kPickerChevronAlpha));
+    // The game's own down arrow, fitted into the chevron's box at its own proportions.
+    const float chevron = pixels(kPickerChevronWidth);
+    const ImVec2 box{at.x + width - pixels(kPickerChevronInset) - (chevron * 0.5F), at.y + ((height - chevron) * 0.5F)};
+    (void)preview::draw_fitted(kDownArrowTag, box, {chevron, chevron}, pixels(1.0F), 1.0F,
+                               ImGui::GetColorU32(ImGuiCol_Text, kPickerChevronAlpha));
     if (!open) {
         ImGui::PopStyleVar(4);
     }
@@ -188,6 +233,51 @@ bool begin_picker(const char* id, const char* preview, float width) noexcept {
 void end_picker() noexcept {
     ImGui::EndCombo();
     ImGui::PopStyleVar(4);
+}
+
+namespace {
+
+/** Pushes what a menu's window reads as it begins: its room and its hairline. */
+void push_menu_frame() noexcept {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{pixels(kMenuPaddingX), pixels(kMenuPaddingY)});
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, pixels(kPickerHairline));
+}
+
+/** Spaces the rows of a menu that has just begun, until the menu ends. */
+void push_menu_rows() noexcept {
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{pixels(kMenuPaddingX) * 2.0F, pixels(kMenuPaddingY) * 2.0F});
+}
+
+} // namespace
+
+bool begin_menu(const char* id) noexcept {
+    push_menu_frame();
+    const bool open = ImGui::BeginPopup(id);
+    ImGui::PopStyleVar(2);
+    if (open) {
+        push_menu_rows();
+    }
+    return open;
+}
+
+void end_menu() noexcept {
+    ImGui::PopStyleVar();
+    ImGui::EndPopup();
+}
+
+bool begin_submenu(const char* label) noexcept {
+    push_menu_frame();
+    const bool open = ImGui::BeginMenu(label);
+    ImGui::PopStyleVar(2);
+    if (open) {
+        push_menu_rows();
+    }
+    return open;
+}
+
+void end_submenu() noexcept {
+    ImGui::PopStyleVar();
+    ImGui::EndMenu();
 }
 
 bool picker_row(const char* label, bool selected) noexcept {
@@ -201,7 +291,7 @@ bool picker_row(const char* label, bool selected) noexcept {
     ImGui::PopStyleVar();
     if (selected) {
         ImGui::GetWindowDrawList()->AddRectFilled(
-            {at.x, at.y}, {at.x + pixels(kPickerRailWidth), at.y + height},
+            {at.x, at.y}, {at.x + pixels(kRailWidth), at.y + height},
             ImGui::GetColorU32(ImGuiCol_Text));
     }
     return pressed;
@@ -327,6 +417,34 @@ void banner(const ImVec4& color, const char* text) noexcept {
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
+}
+
+Answer confirm_footer(const char* action, bool enabled, bool destructive) noexcept {
+    const ImVec2 size{pixels(kConfirmButtonWidth), 0.0F};
+    Answer answer = Answer::none;
+    ImGui::BeginDisabled(!enabled);
+    bool pressed = false;
+    if (destructive) {
+        const ImVec4 hovered{kRefusedColor.x * 1.08F, kRefusedColor.y * 1.08F, kRefusedColor.z * 1.08F, 1.0F};
+        const ImVec4 held{kRefusedColor.x * 0.85F, kRefusedColor.y * 0.85F, kRefusedColor.z * 0.85F, 1.0F};
+        ImGui::PushStyleColor(ImGuiCol_Button, kRefusedColor);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, held);
+        ImGui::PushStyleColor(ImGuiCol_Text, kPrimaryText);
+        pressed = ImGui::Button(action, size);
+        ImGui::PopStyleColor(4);
+    } else {
+        pressed = primary_button(action, size);
+    }
+    if (pressed || (enabled && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)))) {
+        answer = Answer::confirm;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", size) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        answer = Answer::cancel;
+    }
+    return answer;
 }
 
 } // namespace dawn::core::ui::modules::loadout::controls

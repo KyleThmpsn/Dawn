@@ -35,6 +35,17 @@ struct ScaledStat {
 /** An icon that belongs to no investment record, so it has no row to be named by. */
 inline constexpr std::uint32_t kNoIconRow = 0xFFFFFFFFU;
 
+/**
+ * An item definition the catalog leaves out that still names an icon. It is kept only so the icon
+ * browser can say what uses an icon, which is why it carries nothing but names.
+ */
+struct IconOwner {
+    std::uint32_t tag{};
+    std::uint32_t hash{};
+    std::string name;
+    std::string type;
+};
+
 /** One icon container entry, from whichever package declares it. */
 struct IconRow {
     std::uint32_t tag{};
@@ -116,11 +127,16 @@ struct Catalog {
     /** Package icon container per character stat, in the same order as `statRows`. Zero when the
         installed build offers no icon for that stat, and the page then shows its name alone. */
     std::array<std::uint32_t, 6> statIconTags{};
+    /** Every stat that names an icon, as its stat row and the icon container, for the icon browser. */
+    std::vector<std::pair<std::uint16_t, std::uint32_t>> statIcons;
+    /** Item definitions outside `items` that name an icon. Empty until `sweep_icons` fills it. */
+    std::vector<IconOwner> iconOwners;
     /**
-     * The icon containers the icon browser walks, filtered by the package that declares each.
+     * The icons the icon browser walks, filtered by the package that declares each.
      * At load this holds only the investment icons; `sweep_icons` replaces it with every icon
-     * container the installed packages declare, which is the only way to find an icon no record
-     * points at. The sweep reads every package's entry table, so it runs only when asked for.
+     * container the installed packages declare, and every bare image the interface packages keep,
+     * which is the only way to find an icon no record points at. The sweep reads every package's
+     * entry table, so it runs only when asked for.
      */
     std::vector<IconRow> icons;
     /** Package families that declare an icon, in the order `IconRow::package` indexes them. */
@@ -129,6 +145,11 @@ struct Catalog {
     bool iconsSwept{};
     /** Entry class of an icon container, which the sweep searches the packages for. */
     std::uint32_t iconClass{};
+    /**
+     * Entry class of an image record: one layer of an icon container, and the form the interface
+     * packages keep their art in, bare, with no container around it.
+     */
+    std::uint32_t imageClass{};
     /** Investment icon table row by tag, so a swept icon can still name the row that indexes it. */
     std::unordered_map<std::uint32_t, std::uint32_t> investmentIconRows;
     /** The game's own ammunition marks, indexed by `Ammo`. Index zero is never drawn. */
@@ -160,6 +181,18 @@ struct Catalog {
                                         std::int32_t investment) noexcept;
 
 /**
+ * Converts one stored stat value through one curve, for work that holds its own copy of the curve
+ * rather than the catalog, as the armor planner's worker does.
+ * @param scaled Curve that scales the stat, or null when its group does not.
+ * @param investment Stored value.
+ * @return The displayed value, or the stored value when no curve covers it.
+ */
+[[nodiscard]] std::int32_t display_stat(const ScaledStat* scaled, std::int32_t investment) noexcept;
+
+/** @return The curve for one stat row inside a group, or null when the group does not scale it. */
+[[nodiscard]] const ScaledStat* scaled_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_t statRow) noexcept;
+
+/**
  * @return True when the game shows this stat as a number rather than a bar, as its group says.
  * @param catalog Loaded catalog holding the stat groups.
  * @param groupIndex Group the item names, or `kNoStatGroup`.
@@ -186,7 +219,9 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
  * @param catalog Loaded catalog, read for the icon class and the investment rows.
  * @param icons Receives every icon container found, sorted by package, row and tag.
  * @param packages Receives the package families in the order `IconRow::package` indexes them.
+ * @param owners Receives every item definition outside the catalog that names an icon.
  * @return True when the sweep completed, even if it found nothing.
  */
-bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages);
+bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vector<std::string>& packages,
+                 std::vector<IconOwner>& owners);
 } // namespace dawn::state::editor

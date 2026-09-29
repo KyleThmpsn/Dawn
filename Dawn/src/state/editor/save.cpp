@@ -138,7 +138,7 @@ bool every_character_resolves(const AccountState& account, const Catalog& catalo
             exoticWeapons += definition->kind == GearKind::weapon && definition->definition.tier == 5;
             exoticArmor += definition->kind == GearKind::armor && definition->definition.tier == 5;
         }
-        if (exoticWeapons > 1 || exoticArmor > 1) { message = "Only one exotic weapon and one exotic armor piece can be equipped."; return false; }
+        if (exoticWeapons > 1 || exoticArmor > 1) { message = "Only one Exotic weapon and one Exotic armor piece can be equipped."; return false; }
         // Each character encodes as the selected one, which is the only form the resolver accepts.
         for (std::size_t i = 0; i < validation->characterCount; ++i) validation->characters[i].selected = i == c;
         if (!middleware::datagen::family4::loadout::resolve(*validation, c, *resolved)) {
@@ -160,6 +160,31 @@ bool apply(Draft& draft, const Catalog& catalog, std::string& message, bool& liv
     if (!ability_rows(*prepared, catalog, abilities, abilityCount)) {
         message = "The selected subclass abilities could not be resolved."; return false;
     }
+    // A draft the game has moved the account past is refused before anything is written, the restore
+    // point included. The commit below checks again under the lock, which is what makes it safe.
+    AcquireSRWLockShared(&runtime::storage::g_stateLock);
+    const bool stale = runtime::storage::g_state.account != draft.before;
+    ReleaseSRWLockShared(&runtime::storage::g_stateLock);
+    if (stale) {
+        message = "Account changed in game. Reload, then apply again. Edits kept.";
+        return false;
+    }
+    // The subclass rows go out before the account does. The game encodes a character's abilities
+    // from these rows, so an account committed first could be encoded without its row, and a
+    // publish that failed after the commit left the character unable to encode at all. Rows are
+    // only ever added, so publishing them for a commit that is then refused changes nothing.
+    if (!build_data::publish_ability_buckets(std::span(abilities).first(abilityCount))) {
+        message = "Couldn't publish the subclass abilities. Nothing applied."; return false;
+    }
+    for (std::size_t i = 0; i < prepared->characterCount; ++i) {
+        const auto& subclass = prepared->characters[i].equipment.slots[kSubclassSlot];
+        const auto* item = subclass ? catalog.find(subclass->definitionHash) : nullptr;
+        build_data::abilities::Definition row{};
+        if (item != nullptr && !build_data::find_ability_buckets(item->detail.socketEntryListIndex,
+                                                                ability_selection(prepared->characters[i]), row)) {
+            message = "A subclass ability has no published row. Nothing applied."; return false;
+        }
+    }
     // One restore point covers the whole session; later applies reuse the image taken here.
     const bool firstApply = !g_restorePointTaken.load(std::memory_order_acquire);
     if (firstApply) {
@@ -173,7 +198,7 @@ bool apply(Draft& draft, const Catalog& catalog, std::string& message, bool& liv
     auto& account = runtime::storage::g_state.account;
     bool committed = false;
     if (account != draft.before) {
-        message = "Your account changed while you were editing. Reload it, then apply again; your edits have been kept.";
+        message = "Account changed in game. Reload, then apply again. Edits kept.";
     } else if (!persistence::commit_account(account, *prepared)) {
         message = "Could not commit this change. Your account was not changed.";
     } else {
@@ -185,16 +210,14 @@ bool apply(Draft& draft, const Catalog& catalog, std::string& message, bool& liv
     ReleaseSRWLockExclusive(&runtime::storage::g_stateLock);
     if (!committed) return false;
 
-    // Publish the new subclass combinations immediately and persist them for the next launch.
-    (void)build_data::publish_ability_buckets(std::span(abilities).first(abilityCount));
     // Every peer holding the account rebuilds its inventory, appearance and roster from the
     // committed state on its next service poll, so the change shows in game with no restart.
     live = server::bap::publish_external_account_mutation() != 0;
     if (firstApply) {
-        message = live ? "Applied in game. Your save before this session is in Dawn/editor-backups."
-                       : "Saved. It loads when you next sign in. Your previous save is in Dawn/editor-backups.";
+        message = live ? "Applied. Backup in Dawn/editor-backups."
+                       : "Saved for next sign-in. Backup in Dawn/editor-backups.";
     } else {
-        message = live ? "Applied in game." : "Saved. It loads when you next sign in.";
+        message = live ? "Applied." : "Saved for next sign-in.";
     }
     return true;
 }

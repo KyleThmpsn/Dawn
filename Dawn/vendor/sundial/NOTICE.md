@@ -1,7 +1,9 @@
 # Sundial attribution
 
 Source: https://github.com/KyleThmpsn/sundial
-Revision: 366d5a209d41624fab501cbee7c0a418d1c5a310
+Revision: 366d5a209d41624fab501cbee7c0a418d1c5a310; the class-restriction and dummy-item
+lists, the item-string class key and the subclass class, super and attunement-name readers
+follow c228895a321d56248c5544efbd47af43d9f496a3.
 License: GPL-3.0-only (see LICENSE).
 Copyright: Sundial contributors, including KyleThmpsn.
 

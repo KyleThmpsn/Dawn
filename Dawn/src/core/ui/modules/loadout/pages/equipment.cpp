@@ -19,17 +19,21 @@ namespace inv = state::account::inventory;
 
 /** 190 authored pixels put the second randomizer column clear of the first label. */
 constexpr float kRandomizerColumn = 190.0F;
-/** The power field under the slot list, and the action that rolls. */
+/** The power field under the slot list: its label column and its own width. */
 constexpr float kRandomizerLabelWidth = 110.0F;
 constexpr float kRandomizerFieldWidth = 90.0F;
-constexpr float kRandomizerButtonWidth = 120.0F;
 /** Title of the randomizer, used both for the action and for its modal. */
-constexpr const char* kRandomizeTitle = "Randomize loadout";
-/** The heading row's two actions, as words: no ellipsis, no arrow. */
+constexpr const char* kRandomizeTitle = "Randomize Loadout";
+/**
+ * The heading row's actions, as words: no ellipsis, no arrow. Randomize is also the action the
+ * randomizer's confirmation ends on, so the word that opened it is the word that rolls.
+ */
 constexpr const char* kRandomizeLabel = "Randomize";
 constexpr const char* kInventoryLabel = "Inventory";
+constexpr const char* kLoadoutsLabel = "Loadouts";
+constexpr const char* kOptimizeLabel = "Optimize Armor";
 
-/** Draws the randomizer modal and runs one roll when it is confirmed. */
+/** Draws the randomizer modal and runs one roll when it is confirmed, by button or by Enter. */
 void draw_randomizer_modal() noexcept {
     if (!ImGui::BeginPopupModal(kRandomizeTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
@@ -38,7 +42,7 @@ void draw_randomizer_modal() noexcept {
     for (std::size_t slot = 0; slot < state.randomizer.slots.size(); ++slot) {
         bool enabled = state.randomizer.slots[slot];
         ImGui::PushID(static_cast<int>(slot));
-        if (ImGui::Checkbox(edit::kSlots[slot], &enabled)) {
+        if (controls::checkbox(edit::kSlots[slot], &enabled)) {
             state.randomizer.slots[slot] = enabled;
         }
         ImGui::PopID();
@@ -48,12 +52,13 @@ void draw_randomizer_modal() noexcept {
     }
     // A drag field, not a slider track: the same control the Level field on the page uses.
     controls::space(controls::kRowSpacing);
-    controls::field_label("New item power", pixels(kRandomizerLabelWidth));
+    controls::field_label("New Item Power", pixels(kRandomizerLabelWidth));
     ImGui::SetNextItemWidth(pixels(kRandomizerFieldWidth));
     ImGui::DragInt("##random_power", &state.grant.power, 10.0F, 0, kPowerSliderMaximum, "%d",
                    ImGuiSliderFlags_AlwaysClamp);
     controls::space(controls::kSectionSpacing);
-    if (controls::primary_button("Roll loadout", {pixels(kRandomizerButtonWidth), 0.0F})) {
+    const controls::Answer answer = controls::confirm_footer(kRandomizeLabel);
+    if (answer == controls::Answer::confirm) {
         record_edit(edit::randomize(*state.draft,
                                     state.catalog,
                                     state.character,
@@ -61,10 +66,8 @@ void draw_randomizer_modal() noexcept {
                                     level_of(state.grant.power),
                                     state.randomizer.engine,
                                     state.status));
-        ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (answer != controls::Answer::none) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -77,15 +80,32 @@ void draw_randomizer_modal() noexcept {
 void draw_heading_row() noexcept {
     Model& state = model();
     const ImGuiStyle& style = ImGui::GetStyle();
+    const float loadoutsWidth =
+        ImGui::CalcTextSize(kLoadoutsLabel).x + (style.FramePadding.x * 2.0F);
+    const float optimizeWidth =
+        ImGui::CalcTextSize(kOptimizeLabel).x + (style.FramePadding.x * 2.0F);
     const float randomizeWidth =
         ImGui::CalcTextSize(kRandomizeLabel).x + (style.FramePadding.x * 2.0F);
     const float inventoryWidth =
         ImGui::CalcTextSize(kInventoryLabel).x + (style.FramePadding.x * 2.0F);
-    const float actions = randomizeWidth + inventoryWidth + style.ItemSpacing.x;
-    const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-    ImGui::AlignTextToFramePadding();
+    const float actions = loadoutsWidth + optimizeWidth + randomizeWidth + inventoryWidth
+                          + (style.ItemSpacing.x * 3.0F);
+    // The actions end where the side workspace begins rather than at the page edge: the workspace
+    // lies over the page, and set at the edge they sat under it whenever an item was open.
+    const float right =
+        ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - overlay_width();
+    // The heading sets its capitals at the top of the line, where a small button sets its words, so
+    // the row is not aligned to frame padding: that would drop the buttons below the heading.
     controls::heading("Equipped Loadout");
     ImGui::SameLine(right - actions);
+    if (ImGui::SmallButton(kLoadoutsLabel)) {
+        open_loadouts();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(kOptimizeLabel)) {
+        open_optimizer();
+    }
+    ImGui::SameLine();
     if (ImGui::SmallButton(kRandomizeLabel)) {
         ImGui::OpenPopup(kRandomizeTitle);
     }
@@ -94,6 +114,8 @@ void draw_heading_row() noexcept {
         state.view = View::characterInventory;
     }
     draw_randomizer_modal();
+    draw_loadouts_modal();
+    draw_optimizer_modal();
 }
 
 } // namespace

@@ -37,10 +37,12 @@ void settle_stat_targets(edit::Item& item, bool released) noexcept {
     edit::Stats achieved{};
     if (!edit::adjust_stats(item, state.catalog, state.targets.values, achieved)) {
         state.status = kNoAdjustableResult;
+        state.statusFailed = true;
         state.targets.values = current;
         return;
     }
     state.status = achieved == state.targets.values ? kExactResult : kClosestResult;
+    state.statusFailed = false;
     // `mark_changed` drops the target ownership, so both are put back once it has run.
     mark_changed();
     state.targets.values = achieved;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
 #include <imgui.h>
+#include <string_view>
 
 #include "../../../scaling/dpi/ui_dpi_scaling.h"
 #include "../controls.h"
@@ -14,13 +15,11 @@ using scaling::dpi::pixels;
 
 /**
  * Field groups sit side by side, as Sundial's character page lays them out.
- * Its widths, label columns and gaps are kept.
+ * Its widths and label columns are kept; the gap between two groups is the page's own group gap.
  */
 /** Sundial: identity, subclass and abilities, at these widths with these label columns. */
 constexpr float kGroupWidths[]{196.0F, 268.0F, 300.0F};
 constexpr float kGroupLabelWidths[]{58.0F, 66.0F, 88.0F};
-/** Gap between two field groups sharing a row. The gap inside a field is controls' own. */
-constexpr float kGroupColumnGap = 18.0F;
 /** A field control is one line of text plus this, which is as short as a combo reads. */
 constexpr float kFieldFramePaddingY = 1.0F;
 /** Vertical gap between two stacked fields in a group. */
@@ -28,10 +27,6 @@ constexpr float kFieldRowGap = 2.0F;
 /** Sundial clamps a selector between these however wide its group is. */
 constexpr float kSelectorMinimumWidth = 110.0F;
 constexpr float kSelectorMaximumWidth = 190.0F;
-/** Armor totals row: Sundial draws 15px icons, 4px between parts and 10px between stats. */
-constexpr float kStatIconExtent = 15.0F;
-constexpr float kStatItemSpacing = 4.0F;
-constexpr float kStatGap = 10.0F;
 /** Armor occupies slots 3 through 7, which are the slots that carry stats. */
 constexpr std::size_t kFirstArmorSlot = 3;
 /** Highest level the game awards, which is where the level field clamps. */
@@ -42,7 +37,7 @@ constexpr const char* kRaceItems = "Human\0Awoken\0Exo\0";
 constexpr const char* kGenderItems = "Male\0Female\0";
 /** Shown on the class field, which cannot apply until the gear matches it. */
 constexpr const char* kClassNote =
-    "Changing class needs matching armor and a subclass before it can apply.";
+    "A new class needs its own armor and subclass.";
 
 /** @return The control width one group gives its fields. */
 [[nodiscard]] float selector_width(float groupWidth, float labelWidth) noexcept {
@@ -56,6 +51,8 @@ constexpr const char* kClassNote =
 /**
  * Draws one enum picker as a labelled field.
  * @param publish False when the change needs follow-up edits before it can be applied.
+ * @param note What the field needs before its change can apply, shown under the pointer and, once
+ *        a change is held back, on the action bar.
  */
 template <typename Enum>
 void enum_field(const char* label,
@@ -71,6 +68,11 @@ void enum_field(const char* label,
     if (controls::picker("##field", index, items, controlWidth)) {
         value = static_cast<Enum>(index);
         mark_changed(publish);
+        // A change held back from the game otherwise looks applied, so the bar says why it waits.
+        if (!publish && note != nullptr) {
+            model().status = note;
+            model().statusFailed = false;
+        }
     }
     if (note != nullptr && ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", note);
@@ -126,61 +128,72 @@ void draw_identity_group(state::CharacterState& value, float groupWidth, float l
         if (!value.equipment.slots[slot]) {
             continue;
         }
-        const edit::Stats stats = edit::item_stats(*value.equipment.slots[slot], catalog);
-        std::uint16_t group = edit::kNoStatGroup;
-        if (const auto* definition = catalog.find(value.equipment.slots[slot]->definitionHash)) {
-            group = definition->statGroupIndex;
-        }
+        const edit::Stats shown = edit::shown_stats(*value.equipment.slots[slot], catalog);
         for (std::size_t i = 0; i < totals.size(); ++i) {
-            totals[i] += edit::display_stat(catalog, group, catalog.statRows[i], stats[i]);
+            totals[i] += shown[i];
         }
     }
     return totals;
 }
 
+/** Shows a stat's full name while the pointer is on the part of its line just drawn. */
+void name_stat_under_pointer(std::string_view label) noexcept {
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%.*s", static_cast<int>(label.size()), label.data());
+    }
+}
+
+} // namespace
+
 /**
- * Draws the armor totals as one wrapped row, the way Sundial's equipped stat row reads.
- * Six labelled bars filled a column and most of a page; an icon, a name and a value per stat fit
- * on a single line with room to spare.
+ * The line reads the way Sundial's equipped stat row reads. Six labelled bars filled a column and
+ * most of a page; an icon, a name and a value per stat fit on a single line with room to spare.
  */
-void draw_armor_totals_row(const state::CharacterState& value) noexcept {
-    const edit::Stats totals = armor_totals(value);
+void draw_stat_totals(const edit::Stats& totals, bool named) noexcept {
     const Model& state = model();
     const float icon = pixels(kStatIconExtent);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2{pixels(kStatItemSpacing), ImGui::GetStyle().ItemSpacing.y});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{pixels(kStatPartGap), ImGui::GetStyle().ItemSpacing.y});
     for (std::size_t shown = 0; shown < totals.size(); ++shown) {
         const std::size_t i = state.catalog.statOrder[shown];
         if (shown != 0) {
             ImGui::SameLine(0.0F, pixels(kStatGap));
         }
-        const std::uint32_t tag = state.catalog.statIconTags[i];
-        if (tag != 0) {
-            const ImVec2 at = ImGui::GetCursorScreenPos();
-            const float lift = (ImGui::GetTextLineHeight() - icon) * 0.5F;
-            if (preview::draw(tag, {at.x, at.y + lift}, icon)) {
-                ImGui::Dummy({icon, ImGui::GetTextLineHeight()});
-                ImGui::SameLine(0.0F, pixels(kStatItemSpacing));
-            }
-        }
         const std::string_view label = edit::stat_label(state.catalog, i);
-        ImGui::TextDisabled("%.*s", static_cast<int>(label.size()), label.data());
-        ImGui::SameLine(0.0F, pixels(kStatItemSpacing));
+        const std::uint32_t tag = state.catalog.statIconTags[i];
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const float lift = (ImGui::GetTextLineHeight() - icon) * 0.5F;
+        const bool marked = tag != 0 && preview::draw(tag, {at.x, at.y + lift}, icon);
+        if (marked) {
+            ImGui::Dummy({icon, ImGui::GetTextLineHeight()});
+            if (!named) {
+                name_stat_under_pointer(label);
+            }
+            ImGui::SameLine(0.0F, pixels(kStatPartGap));
+        }
+        // Named, a stat reads in full; short of room, a stat with no icon still keeps its first letters.
+        if (named || !marked) {
+            const std::string_view text = named ? label : label.substr(0, (std::min)(label.size(), kStatAbbreviation));
+            ImGui::TextDisabled("%.*s", static_cast<int>(text.size()), text.data());
+            if (!named) {
+                name_stat_under_pointer(label);
+            }
+            ImGui::SameLine(0.0F, pixels(kStatPartGap));
+        }
         ImGui::Text("%d", totals[i]);
     }
     ImGui::PopStyleVar();
 }
 
-} // namespace
-
 void draw_armor_totals() noexcept {
-    draw_armor_totals_row(character());
+    draw_stat_totals(armor_totals(character()), true);
 }
 
 void draw_character_fields() noexcept {
     state::CharacterState& value = character();
-    const float available = ImGui::GetContentRegionAvail().x;
-    const float gap = pixels(kGroupColumnGap);
+    // The groups wrap inside the width the side workspace leaves uncovered. The workspace lies over
+    // the page rather than beside it, so measured to the page edge the last group sat under it.
+    const float available = (std::max)(0.0F, ImGui::GetContentRegionAvail().x - overlay_width());
+    const float gap = pixels(controls::kGroupGap);
     // The field rows run shorter than the rest of the page; a combo here is a label, not a target.
     // The fields stack with only a sliver between them, so a group reads as one block.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,

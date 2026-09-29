@@ -17,6 +17,8 @@ enum class Action {
     equip,
     /** A slot with nothing in it. */
     fill,
+    /** A stored item at the postmaster, which pulls into its bucket before it can be equipped. */
+    pull,
 };
 
 /**

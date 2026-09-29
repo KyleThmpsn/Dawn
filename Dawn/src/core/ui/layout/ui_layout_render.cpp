@@ -54,9 +54,19 @@ bool render(bool visible) noexcept {
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, {0.5F, 0.5F});
     ImGui::SetNextWindowSize({width * scale, height * scale}, ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, progress);
+    // The loadout page is a workspace with its own tab rows and action bar, so the window keeps
+    // only a small margin round it, and the page takes the rest with no margin of its own.
+    if (loadout) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {12.0F * dpi, 8.0F * dpi});
+    }
     constexpr auto flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
         | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar;
-    if (ImGui::Begin("Dawn", nullptr, flags)) {
+    const bool open = ImGui::Begin("Dawn", nullptr, flags);
+    // Only the window takes the small margin; the popups, tooltips and sheets it opens keep the theme's.
+    if (loadout) {
+        ImGui::PopStyleVar();
+    }
+    if (open) {
         const auto origin = ImGui::GetWindowPos();
         ImGui::GetWindowDrawList()->AddRectFilled(origin,
             {origin.x + ImGui::GetWindowWidth(), origin.y + 3.0F * dpi},
@@ -67,16 +77,28 @@ bool render(bool visible) noexcept {
         // tab row, and a Spacing either side of the rule puts a hole between the two rows. The
         // rule alone carries the boundary.
         ImGui::Separator();
+        // The loadout page ends on its own action bar, so it takes the footer's line as well.
+        const float footer = loadout ? 0.0F : ImGui::GetTextLineHeightWithSpacing();
         const float contentHeight = (std::max)(1.0F,
             // The footer is one line of text, not a framed control, so reserving a frame
             // height for it left dead panel under every page.
-            ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing());
-        if (ImGui::BeginChild("##dawn_content", {0, contentHeight},
-            ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::GetContentRegionAvail().y - footer);
+        // The loadout page keeps only a sliver at its sides, so its grid doesn't run into the frame.
+        if (loadout) {
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {6.0F * dpi, 0.0F});
+        }
+        const bool content = ImGui::BeginChild("##dawn_content", {0, contentHeight},
+            ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoSavedSettings);
+        if (loadout) {
+            ImGui::PopStyleVar();
+        }
+        if (content) {
             draw_content(selected);
         }
         ImGui::EndChild();
-        ImGui::TextDisabled("DAWN  /  CAMPAIGN ARCHIVE");
+        if (!loadout) {
+            ImGui::TextDisabled("DAWN  /  CAMPAIGN ARCHIVE");
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar();

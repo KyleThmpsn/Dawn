@@ -36,6 +36,42 @@ inline constexpr std::uint8_t kExoticTier = 5;
  */
 [[nodiscard]] float collection_card_height() noexcept;
 
+/** @return The height of an item's band, the header a card and an armory row both lead with. */
+[[nodiscard]] float band_height() noexcept;
+
+/**
+ * Draws an item's band: its rarity ground, its icon struck flush into the left edge, its name in
+ * capitals in the title cut, and its type with a label after it, muted, the two lines centred as a
+ * pair. Inventory cards and armory rows both lead with it, so an item reads the same everywhere.
+ * @param definition The item, or null for an empty slot, which is a dark band with the label alone.
+ * @param label Word set after the type, such as the slot or where the item is equipped, or null.
+ * @param origin Top-left corner in framebuffer pixels; the band is `band_height` tall.
+ * @param right Right edge in framebuffer pixels.
+ * @param lit True under the pointer, which lightens the ground and leaves the icon and text as they are.
+ * @param locked True for a locked instance, which sets the game's padlock at the end of the name.
+ */
+void item_band(const edit::CatalogItem* definition,
+               const char* label,
+               ImVec2 origin,
+               float right,
+               bool lit = false,
+               bool locked = false) noexcept;
+
+/**
+ * The game's padlock, which marks a locked item wherever the item is shown. It is a bare image in
+ * the interface package that no record points at, so it is named by its tag.
+ */
+inline constexpr std::uint32_t kLockIconTag = 0x80B46BA8U;
+
+/**
+ * Draws the padlock fitted into a square box at its own proportions.
+ * @param origin Top-left corner of the box in framebuffer pixels.
+ * @param extent Edge of the box in framebuffer pixels.
+ * @param tint Colour the white glyph is drawn in, which is the text's on the surface under it.
+ * @return False until its artwork is in.
+ */
+bool padlock(ImVec2 origin, float extent, ImU32 tint) noexcept;
+
 /** @return The name of one character class. */
 [[nodiscard]] const char* class_name(state::CharacterClass value) noexcept;
 
