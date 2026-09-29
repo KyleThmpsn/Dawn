@@ -86,10 +86,12 @@ constexpr float kPerkRowHeight = 30.0F;
 constexpr float kBlockGap = 4.0F;
 /** Gap between the name and the type line under it. */
 constexpr float kBandTypeGap = 7.0F;
-/** Shown before the tier when the instance is locked. */
-constexpr const char* kLockedLabel = "LOCKED";
+/** Box the header's padlock is fitted into at its own proportions, a little under the name's capitals. */
+constexpr float kLockIconExtent = 16.0F;
+/** Said instead of the badge on the type line, only when its artwork cannot be read. */
+constexpr const char* kLockedLabel = "Locked";
 /** Body colors: the game's near-black tooltip, with white-on-black blocks and bars. */
-constexpr ImVec4 kBodyColor{0.09F, 0.09F, 0.10F, 0.97F};
+constexpr ImVec4 kBodyColor{0.09F, 0.09F, 0.10F, 0.98F};
 constexpr ImVec4 kBorderColor{1.0F, 1.0F, 1.0F, 0.12F};
 constexpr ImVec4 kIntrinsicFill{1.0F, 1.0F, 1.0F, 0.07F};
 /**
@@ -169,8 +171,7 @@ constexpr float kSheetHeight = 560.0F;
 constexpr float kSheetHairline = 1.0F;
 constexpr ImVec4 kSheetGround{0.09F, 0.09F, 0.10F, 0.98F};
 constexpr ImVec4 kSheetDim{0.0F, 0.0F, 0.0F, 0.55F};
-/** A sheet is headed by its title in the title cut, a little under the tooltip's band size. */
-constexpr float kSheetTitleScale = 1.3F;
+/** Stroke weight a sheet's title is struck with when the build ships no medium cut. */
 constexpr float kSheetTitleWeight = 1.0F;
 /** The rule beside the power figure, which the game draws fainter than the type around it. */
 constexpr ImVec4 kPowerRuleColor{1.0F, 1.0F, 1.0F, 0.30F};
@@ -206,14 +207,20 @@ constexpr float kTargetFillAlpha = 0.55F;
 /** Shown on an editable socket with nothing fitted in it. */
 constexpr const char* kEmptySocket = "Empty Socket";
 /**
- * A perk row set out in full leaves this much between its lines, and pads itself above and below
- * by a share of the body padding so a stack of them still reads as rows rather than paragraphs.
+ * A perk row set out in full pads itself above and below by a share of the body padding, so a
+ * stack of them still reads as rows rather than paragraphs.
  */
-constexpr float kPerkLineGap = 2.0F;
 constexpr float kPerkRowPaddingScale = 0.75F;
-/** A row set out in full puts the plug's type after its name, small and muted, not on a line. */
+/**
+ * Where a perk's description starts against the bottom of its name's line. Negative: the name's
+ * line keeps descender room no capital uses, so the description rides up into it, close under the
+ * name as the game sets it.
+ */
+constexpr float kPerkAboutLift = -2.0F;
+/** A list row's type line is set this far under the body, as a note on the name above it. */
 constexpr float kPerkTypeScale = 0.82F;
-constexpr float kPerkTypeGap = 6.0F;
+/** A list row pads itself above and below by this share of the body padding. */
+constexpr float kPerkListPaddingScale = 0.5F;
 /** Flavour text is set a little under the body, as the game sets it. */
 constexpr float kDescriptionScale = 1.0F;
 
@@ -369,6 +376,30 @@ void draw_masterwork_glow(std::uint8_t tier) noexcept {
 }
 
 /**
+ * Steps a band's name down before it is cut, as the game's header fits a long name rather than
+ * truncating it. A few fixed steps, not a size per name, so the atlas bakes only a handful of sizes.
+ * @param name The name as it is set, in capitals.
+ * @param room Width the name may take.
+ * @param size Its own size.
+ * @param smallest The type line's size, which the name never goes under.
+ * @return The size it is set at; past the last step it is cut.
+ */
+[[nodiscard]] float fitted_name_size(const std::string& name, float room, float size, float smallest) noexcept {
+    constexpr float kSteps[]{1.0F, 0.86F, 0.74F};
+    float fitted = size;
+    for (const float step : kSteps) {
+        fitted = (std::max)(smallest, size * step);
+        (void)art::push_title(fitted, 0.0F);
+        const float width = ImGui::CalcTextSize(name.c_str()).x;
+        ImGui::PopFont();
+        if (width <= room) {
+            break;
+        }
+    }
+    return fitted;
+}
+
+/**
  * Draws the rarity band: the icon flush in the corner, the name in capitals beside it, the type
  * under the name and the tier at the far right of that line.
  */
@@ -396,10 +427,17 @@ void draw_band(const edit::CatalogItem& definition,
     }
     art::icon(definition, origin, height);
 
-    // Tier first, so the name knows how much of the line it may take. It shares the type's size,
-    // so both are measured with that pushed.
+    // The padlock takes the end of the name's line, so it is settled before the name is sized.
     const float typeSize = ImGui::GetStyle().FontSizeBase * kTypeScale * scale;
-    const float nameHeight = ImGui::GetStyle().FontSizeBase * kNameScale * scale;
+    const std::uint8_t tier = definition.definition.tier;
+    const bool locked = owned != nullptr && (owned->flags & inv::kLockedItemFlag) != 0;
+    const bool lockWords = locked && preview::unavailable(art::kLockIconTag);
+    const float textLeft = origin.x + height + padding;
+    const float badge = pixels(kLockIconExtent);
+    const float badgeRoom = locked && !lockWords ? badge + (padding * 0.75F) : 0.0F;
+    const std::string name = art::shout(definition.name);
+    const float nameRoom = right - padding - textLeft - badgeRoom;
+    const float nameHeight = fitted_name_size(name, nameRoom, ImGui::GetStyle().FontSizeBase * kNameScale * scale, typeSize);
     float nameCapTop = 0.0F;
     float nameCap = 0.0F;
     const float nameWeight = art::push_title(nameHeight, pixels(kNameWeight));
@@ -412,16 +450,14 @@ void draw_band(const edit::CatalogItem& definition,
     ink_band(kCapSample, typeCapTop, typeCap);
     // A tier outside the rarity ladder has no name worth printing, and neither has an item the
     // build gives no type. Either one is left off rather than filled in with a word for nothing.
-    const std::uint8_t tier = definition.definition.tier;
-    const char* tierName = tier != 0 ? art::tier_name(tier) : nullptr;
-    const bool locked = owned != nullptr && (owned->flags & inv::kLockedItemFlag) != 0;
-    const float lockWidth =
-        locked ? ImGui::CalcTextSize(kLockedLabel).x + (padding * 0.75F) : 0.0F;
-    const float tierWidth =
-        (tierName != nullptr ? ImGui::CalcTextSize(tierName).x : 0.0F) + lockWidth;
-    const float textLeft = origin.x + height + padding;
+    // The lock is said after the tier only when its padlock cannot be drawn.
+    std::string trailing = tier != 0 ? art::tier_name(tier) : "";
+    if (lockWords) {
+        trailing += (trailing.empty() ? std::string() : std::string(controls::kDetailSeparator)) + kLockedLabel;
+    }
+    const float tierWidth = trailing.empty() ? 0.0F : ImGui::CalcTextSize(trailing.c_str()).x;
     ImGui::PopFont();
-    const bool secondLine = !definition.type.empty() || tierName != nullptr || locked;
+    const bool secondLine = !definition.type.empty() || !trailing.empty();
     // The pair is centred on the ink it actually puts on the band: the capitals of the name, the
     // gap, and the capitals of the type. Each line is then backed off by the room its own box
     // keeps above its capitals, which is what leaves the same space over the name as under the
@@ -433,12 +469,12 @@ void draw_band(const edit::CatalogItem& definition,
     const ImU32 muted = art::band_text(tier, true);
 
     (void)art::push_title(nameHeight, 0.0F);
-    art::clipped_text(art::shout(definition.name),
-                      {textLeft, nameTop},
-                      right - padding - textLeft,
-                      art::band_text(tier),
-                      nameWeight);
+    art::clipped_text(name, {textLeft, nameTop}, nameRoom, art::band_text(tier), nameWeight);
     ImGui::PopFont();
+    // The padlock sits level with the name's capitals, in the name's own colour.
+    if (badgeRoom > 0.0F) {
+        (void)art::padlock({right - padding - badge, inkTop + ((nameCap - badge) * 0.5F)}, badge, art::band_text(tier));
+    }
     ImGui::PushFont(nullptr, typeSize);
     if (!definition.type.empty()) {
         art::clipped_text(definition.type,
@@ -446,13 +482,8 @@ void draw_band(const edit::CatalogItem& definition,
                           right - padding - textLeft - tierWidth - padding,
                           muted);
     }
-    if (tierName != nullptr) {
-        draw->AddText({right - padding - tierWidth, typeTop}, muted, tierName);
-    }
-    if (locked) {
-        draw->AddText({right - padding - ImGui::CalcTextSize(kLockedLabel).x, typeTop},
-                      muted,
-                      kLockedLabel);
+    if (!trailing.empty()) {
+        draw->AddText({right - padding - tierWidth, typeTop}, muted, trailing.c_str());
     }
     ImGui::PopFont();
     // The cursor started one padding below the frame; the spacer carries it under the band.
@@ -906,7 +937,12 @@ void draw_stats(const std::vector<StatRow>& rows,
                 float width,
                 StatEdit* stats) noexcept {
     const float padding = pixels(kPadding);
-    const float nameWidth = pixels(kStatNameWidth);
+    // The name column is as wide as its widest name, and never narrower than the authored column:
+    // "Rounds Per Minute" ran past it and lost its first letter to the frame edge.
+    float nameWidth = pixels(kStatNameWidth);
+    for (const StatRow& row : rows) {
+        nameWidth = (std::max)(nameWidth, ImGui::CalcTextSize(row.name).x);
+    }
     const float gap = pixels(kStatColumnGap);
     const float barWidth = width - nameWidth - pixels(kStatValueWidth) - (gap * 2.0F);
     const float lineHeight = ImGui::GetTextLineHeight();
@@ -1034,6 +1070,14 @@ struct PerkLines {
     float stack{};
 };
 
+/** @return The height of a list row's type line, which is set under the body size. */
+[[nodiscard]] float list_type_line() noexcept {
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kPerkTypeScale);
+    const float line = ImGui::GetTextLineHeight();
+    ImGui::PopFont();
+    return line;
+}
+
 /** @return The width the text of a perk row has beside its badge. */
 [[nodiscard]] float perk_text_width(float width) noexcept {
     const float badge = pixels(kPerkIconExtent) + (pixels(kPerkBadgePadding) * 2.0F);
@@ -1045,24 +1089,22 @@ struct PerkLines {
                                    float width,
                                    PerkDetail detail) noexcept {
     PerkLines lines;
-    const float line = ImGui::GetTextLineHeight();
-    const float gap = pixels(kPerkLineGap);
-    lines.stack = line;
+    lines.stack = ImGui::GetTextLineHeight();
     if (detail == PerkDetail::name) {
         return lines;
     }
     // A typed list keeps every row the same height whether or not a plug names a type, so a
-    // clipper can pitch off one row and the list stays level. A full row sets the type on the
-    // name line instead, so it costs no height.
+    // clipper can pitch off one row and the list stays level. The type is set small, close under
+    // the name, so the pair stands no taller than the icon beside it.
     lines.type = detail == PerkDetail::typed;
     if (lines.type) {
-        lines.stack += gap + line;
+        lines.stack += pixels(kPerkAboutLift) + list_type_line();
     }
     if (detail == PerkDetail::full && plug != nullptr && !plug->description.empty()) {
         lines.about = true;
         lines.aboutHeight =
             ImGui::CalcTextSize(plug->description.c_str(), nullptr, false, perk_text_width(width)).y;
-        lines.stack += gap + lines.aboutHeight;
+        lines.stack += pixels(kPerkAboutLift) + lines.aboutHeight;
     }
     return lines;
 }
@@ -1094,20 +1136,49 @@ bool begin_sheet(const char* id) noexcept {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, pixels(kSheetHairline));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, kSheetGround);
     ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, kSheetDim);
-    // The frame is read when the window begins, so the styles go straight back afterwards.
-    const bool open = ImGui::BeginPopupModal(
-        id, nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+    // The frame is read when the window begins, so the styles go straight back afterwards. A sheet
+    // is one frame at one size, so it offers no resize grip, and it never scrolls as a whole: what
+    // runs long scrolls in a list of its own, between a head and a footer that stay put.
+    const bool open = ImGui::BeginPopupModal(id,
+                                             nullptr,
+                                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar
+                                                 | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar
+                                                 | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
-    return open;
+    if (!open) {
+        return false;
+    }
+    // A press outside the sheet closes it, as the game backs out of an overlay. A list or a menu the
+    // sheet has open takes that press to close itself instead, and neither the frame the sheet opens
+    // on nor the second press of a double-click, which lands where the sheet was opened from, counts.
+    const ImVec2 at = ImGui::GetWindowPos();
+    const ImVec2 size = ImGui::GetWindowSize();
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetIO().MouseClickedCount[ImGuiMouseButton_Left] == 1
+        && !ImGui::IsWindowAppearing() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)
+        && !ImGui::IsMouseHoveringRect(at, {at.x + size.x, at.y + size.y}, false)) {
+        ImGui::CloseCurrentPopup();
+    }
+    // A tick inside a sheet is white, as the game's are; the page keeps its accent for rails.
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    return true;
 }
 
 void end_sheet() noexcept {
+    ImGui::PopStyleColor();
     ImGui::EndPopup();
 }
 
+ImVec4 sheet_ground() noexcept {
+    return kSheetGround;
+}
+
+ImVec4 sheet_dim() noexcept {
+    return kSheetDim;
+}
+
 void draw_sheet_head(const std::string& title, const char* detail) noexcept {
-    const float size = ImGui::GetStyle().FontSizeBase * kSheetTitleScale;
+    const float size = ImGui::GetStyle().FontSizeBase * controls::kHeadingScale;
     const float weight = art::push_title(size, pixels(kSheetTitleWeight));
     art::clipped_text(art::shout(title),
                       ImGui::GetCursorScreenPos(),
@@ -1131,7 +1202,10 @@ void draw_heading(const char* text) noexcept {
 }
 
 void draw_label(const char* text) noexcept {
-    ImGui::TextColored(kMuted, "%s", art::shout(text).c_str());
+    // Set in the game's spaced capitals, as its tabs and section headings are, so every muted label
+    // on the page reads as one style.
+    const float width = controls::spaced(text, ImGui::GetCursorScreenPos(), ImGui::GetColorU32(kMuted));
+    ImGui::Dummy({width, ImGui::GetTextLineHeight()});
 }
 
 bool begin_frame(const char* id, float width) noexcept {
@@ -1182,70 +1256,67 @@ float perk_row_height(const edit::CatalogItem* plug, float width, PerkDetail det
     if (detail == PerkDetail::name) {
         return pixels(kPerkRowHeight);
     }
+    // A list row's icon is as tall as its two lines, as the game lists a mod: icon and words level.
+    if (detail == PerkDetail::typed) {
+        return (pixels(kPadding) * kPerkListPaddingScale * 2.0F) + perk_lines(plug, width, detail).stack;
+    }
     const float pad = pixels(kPadding) * kPerkRowPaddingScale;
     return (pad * 2.0F) + (std::max)(badge, perk_lines(plug, width, detail).stack);
 }
 
-void draw_perk_row(const edit::CatalogItem* plug,
-                   float width,
-                   PerkDetail detail,
-                   const char* action) noexcept {
+void draw_row_rule() noexcept {
+    rule();
+    // The rule's own pixel, so the next row starts under it rather than on it.
+    ImGui::Dummy({0.0F, 1.0F});
+}
+
+void draw_perk_row(const edit::CatalogItem* plug, float width, PerkDetail detail, bool lit) noexcept {
     const float rowHeight = perk_row_height(plug, width, detail);
-    const float icon = pixels(kPerkIconExtent);
-    const float badge = icon + (pixels(kPerkBadgePadding) * 2.0F);
     const float line = ImGui::GetTextLineHeight();
-    const float gap = pixels(kPerkLineGap);
     const PerkLines lines = perk_lines(plug, width, detail);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 at = ImGui::GetCursorScreenPos();
 
+    // Every ground a row takes spans the whole frame, edge to edge and rule to rule.
+    float left = 0.0F;
+    float right = 0.0F;
+    frame_span(left, right);
     if (plug != nullptr && intrinsic_plug(*plug)) {
         // The game sets the intrinsic frame, and only that, on a panel of its own.
-        float left = 0.0F;
-        float right = 0.0F;
-        frame_span(left, right);
-        draw->AddRectFilled(
-            {left, at.y}, {right, at.y + rowHeight}, ImGui::GetColorU32(kIntrinsicFill));
+        draw->AddRectFilled({left, at.y}, {right, at.y + rowHeight}, ImGui::GetColorU32(kIntrinsicFill));
     }
+    if (lit) {
+        draw->AddRectFilled({left, at.y}, {right, at.y + rowHeight}, ImGui::GetColorU32(ImGuiCol_FrameBgHovered));
+    }
+    // A list row's icon is as tall as its two lines; every other row keeps the tooltip's badge.
+    const bool listed = detail == PerkDetail::typed;
+    const float badge = listed ? lines.stack : pixels(kPerkIconExtent) + (pixels(kPerkBadgePadding) * 2.0F);
     // The compact row centres its one line on the badge. A fuller row hangs its text stack from
     // the same top the badge hangs from, so a long description runs down past it.
     const bool compact = detail == PerkDetail::name;
     const float badgeTop = compact ? at.y + ((rowHeight - badge) * 0.5F)
                                    : at.y + ((rowHeight - (std::max)(badge, lines.stack)) * 0.5F);
-    // A list row shows the icon alone; the badge belongs to a fitted perk on the tooltip.
-    draw_plug_badge(plug, {at.x, badgeTop}, badge, detail != PerkDetail::typed);
+    // A row shows the perk's own icon with no round badge behind it; a list row's fills its box.
+    if (listed && plug != nullptr) {
+        (void)preview::draw(plug->iconTag, {at.x, badgeTop}, badge);
+    } else {
+        draw_plug_badge(plug, {at.x, badgeTop}, badge, false);
+    }
 
     const float textLeft = at.x + badge + pixels(kPadding);
-    float textWidth = perk_text_width(width);
+    const float textWidth = (std::max)(0.0F, at.x + width - textLeft);
     float top = compact ? at.y + ((rowHeight - line) * 0.5F) : badgeTop;
-    if (action != nullptr) {
-        // The word sits at the far end of the name line and the name gives way to it.
-        const float actionWidth = ImGui::CalcTextSize(action).x;
-        draw->AddText({at.x + width - actionWidth, top}, ImGui::GetColorU32(kMuted), action);
-        textWidth = (std::max)(0.0F, textWidth - actionWidth - pixels(kPadding));
-    }
     const std::string& name = plug != nullptr ? plug->name : std::string(kEmptySocket);
     art::clipped_text(name,
                       {textLeft, top},
                       textWidth,
                       ImGui::GetColorU32(plug != nullptr ? ImGuiCol_Text : ImGuiCol_TextDisabled));
-    if (detail == PerkDetail::full && plug != nullptr && !plug->type.empty()) {
-        // The type follows the name on its line, set small so it reads as a note on the name.
-        const float nameWidth = (std::min)(ImGui::CalcTextSize(name.c_str()).x, textWidth);
-        const float typeSize = ImGui::GetStyle().FontSizeBase * kPerkTypeScale;
-        ImGui::PushFont(nullptr, typeSize);
-        const float typeLeft = textLeft + nameWidth + pixels(kPerkTypeGap);
-        art::clipped_text(plug->type,
-                          {typeLeft, top + (line - ImGui::GetTextLineHeight())},
-                          (std::max)(0.0F, textLeft + textWidth - typeLeft),
-                          ImGui::GetColorU32(kMuted));
-        ImGui::PopFont();
-    }
-    top += line + gap;
+    // What follows the name hangs close under it, as the game sets it, not a whole gap below.
+    top += line + pixels(kPerkAboutLift);
     if (lines.type && plug != nullptr) {
-        art::clipped_text(
-            plug->type, {textLeft, top}, perk_text_width(width), ImGui::GetColorU32(kMuted));
-        top += line + gap;
+        ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * kPerkTypeScale);
+        art::clipped_text(plug->type, {textLeft, top}, textWidth, ImGui::GetColorU32(kMuted));
+        ImGui::PopFont();
     }
     if (lines.about && plug != nullptr) {
         // Wrapped rather than clipped: what a perk does is the reason the row is this tall.
@@ -1332,7 +1403,10 @@ void draw(const edit::CatalogItem& definition, const edit::Item* owned) noexcept
             rule();
         }
         first = false;
-        draw_perk_row(plug, pixels(kWidth), PerkDetail::name);
+        // The intrinsic frame carries its description, as the game's tooltip sets it: it is what a
+        // player hovers an exotic to read.
+        const bool intrinsic = plug != nullptr && intrinsic_plug(*plug);
+        draw_perk_row(plug, pixels(kWidth), intrinsic ? PerkDetail::full : PerkDetail::name);
     }
 
     ImGui::EndTooltip();

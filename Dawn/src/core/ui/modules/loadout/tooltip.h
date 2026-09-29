@@ -81,8 +81,9 @@ void end_frame() noexcept;
  * Opens a sheet: the modal the editor lays over the page for one task, as the game lays its socket
  * picker over the inventory. It is the tooltip's ground in a square hairlined frame with no title
  * bar, dims the page behind it, and opens centred at the given size; it can then be dragged by its
- * head. Every sheet the editor opens is this one frame at this one size, so no two of them can
- * drift apart.
+ * head. A press outside it closes it, so a sheet needs no Close of its own; Escape is each sheet's
+ * to take, since what it lets go of first differs. Every sheet the editor opens is this one frame
+ * at this one size, so no two of them can drift apart.
  * @param id Popup id, which the caller opens with `ImGui::OpenPopup` from the same scope.
  * @return True while the sheet is open. Call `end_sheet` only then.
  */
@@ -110,8 +111,20 @@ void draw_sheet_head(const std::string& title, const char* detail) noexcept;
 /** @return The colour of the rule between two rows of a list, the tooltip's own divider. */
 [[nodiscard]] ImVec4 rule_color() noexcept;
 
+/** @return The ground of a sheet and of every popup on the page: the tooltip's near-black. */
+[[nodiscard]] ImVec4 sheet_ground() noexcept;
+
+/** @return The dim a sheet lays over the page behind it. */
+[[nodiscard]] ImVec4 sheet_dim() noexcept;
+
 /** Draws a divider across the whole frame at the cursor, and one block gap under it. */
 void draw_rule() noexcept;
+
+/**
+ * Draws a divider across the whole frame at the cursor and steps past it with no gap, so the row
+ * under it, and any fill that row lays down, meets the rule.
+ */
+void draw_row_rule() noexcept;
 
 /**
  * Draws a section heading inside the frame, in the muted capitals the game heads a section with.
@@ -161,18 +174,13 @@ enum class PerkDetail : std::uint8_t {
                                     PerkDetail detail) noexcept;
 
 /**
- * Draws one perk row at the cursor and advances past it: the round badge holding the icon, the
- * name beside it, and under that whatever the detail asks for. An intrinsic frame sits on the
- * panel the game gives it.
+ * Draws one perk row at the cursor and advances past it: the plug's icon, the name beside it, and
+ * under that whatever the detail asks for. An intrinsic frame sits on the panel the game gives it.
  * @param plug Plug the row shows, or null for an empty socket.
  * @param width Row width in framebuffer pixels.
  * @param detail How much of the plug the row sets out.
- * @param action A word set at the far end of the name line saying what the row does when it is
- * pressed, or null when the row is not a control.
+ * @param lit True to lay the hover fill across the whole frame behind the row.
  */
-void draw_perk_row(const edit::CatalogItem* plug,
-                   float width,
-                   PerkDetail detail,
-                   const char* action = nullptr) noexcept;
+void draw_perk_row(const edit::CatalogItem* plug, float width, PerkDetail detail, bool lit = false) noexcept;
 
 } // namespace dawn::core::ui::modules::loadout::tooltip

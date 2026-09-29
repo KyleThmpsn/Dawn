@@ -17,17 +17,22 @@ namespace {
 using scaling::dpi::pixels;
 namespace inv = state::account::inventory;
 
-/** Width of a grant field beside its label. The actions the pane offers take the shared action height. */
+/**
+ * Width of a number field beside its label, in the grant and on an owned stack alike. The actions
+ * the pane offers take the shared action height.
+ */
 constexpr float kGrantFieldWidth = 90.0F;
 /** Title of the item removal, used for both the action and its modal. */
 constexpr const char* kRemoveItemTitle = "Remove Item?";
-/** Width of each of the removal confirmation's two buttons, so the pair reads as one row. */
-constexpr float kConfirmButtonWidth = 92.0F;
 /** The pane's own controls, which say what they do rather than showing a glyph. */
 constexpr const char* kCloseLabel = "Close";
+constexpr const char* kEquipLabel = "Equip";
 constexpr const char* kUnequipLabel = "Unequip";
 constexpr const char* kPullLabel = "Pull";
 constexpr const char* kSendLabel = "Send To";
+/** Why the removal waits, said under the pointer in the words the card's menu uses. */
+constexpr const char* kUnequipToRemove = "Unequip it to remove it.";
+constexpr const char* kUnlockToRemove = "Unlock it to remove it.";
 /** Where the item the pane shows is kept, in the header's words. */
 constexpr const char* kEquippedLabel = "Equipped";
 constexpr const char* kPostmasterLabel = "Postmaster";
@@ -114,16 +119,24 @@ struct Placement {
  * Draws the pane's own header row, above the item: where the item is on the left, with the
  * action that moves it, and the pane's close on the right.
  * These are the editor's controls, not the game's, so they sit outside the item frame.
+ * @param definition Catalog definition of the item, which says whether a slot takes it at all.
+ * @param owned Owned instance, or null for a catalog item nobody owns yet.
  */
-void draw_pane_header(const edit::Item* owned) noexcept {
+void draw_pane_header(const edit::CatalogItem& definition, const edit::Item* owned) noexcept {
     Model& state = model();
     const Placement placement = owned != nullptr ? placement_of(owned->instanceSoid) : Placement{};
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s",
-                        owned == nullptr     ? holding_of(state.selection.definitionHash)
+    const char* where = owned == nullptr     ? holding_of(state.selection.definitionHash)
                         : placement.equipped ? kEquippedLabel
                         : owned->postmaster  ? kPostmasterLabel
-                                             : kInInventoryLabel);
+                                             : kInInventoryLabel;
+    // The word is set as the game sets its status words, in spaced capitals, level with the words
+    // on the buttons beside it. The run leaves the cursor where it was, so a dummy holds its place.
+    ImGui::AlignTextToFramePadding();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float wordWidth = controls::spaced(where,
+                                             {at.x, at.y + ImGui::GetStyle().FramePadding.y},
+                                             ImGui::GetColorU32(tooltip::muted()));
+    ImGui::Dummy({wordWidth, ImGui::GetTextLineHeight()});
     if (placement.equipped) {
         ImGui::SameLine();
         if (ImGui::SmallButton(kUnequipLabel)) {
@@ -135,6 +148,14 @@ void draw_pane_header(const edit::Item* owned) noexcept {
         ImGui::SameLine();
         if (ImGui::SmallButton(kPullLabel)) {
             record_edit(edit::pull_from_postmaster(
+                *state.draft, state.catalog, state.character, owned->instanceSoid, state.status));
+        }
+    } else if (owned != nullptr && definition.slot < inv::kEquipmentSlotCount) {
+        // A stowed item goes on from here as it does from its card, so the pane is never the one
+        // place an item can be looked at but not worn.
+        ImGui::SameLine();
+        if (ImGui::SmallButton(kEquipLabel)) {
+            record_edit(edit::equip(
                 *state.draft, state.catalog, state.character, owned->instanceSoid, state.status));
         }
     }
@@ -214,9 +235,21 @@ void draw_grant(const edit::CatalogItem& definition) noexcept {
     }
 }
 
-/** Draws the removal action, which only an unequipped, unlocked item offers. */
-void draw_remove_action() noexcept {
-    if (ImGui::Button("Remove from Inventory", {-FLT_MIN, pixels(controls::kActionHeight)})) {
+/**
+ * Draws the removal action. An item that cannot be removed yet keeps it, disabled, with the reason
+ * under the pointer, as the card's menu does: an action that vanished never said what would bring
+ * it back.
+ * @param refusal Why the item cannot be removed yet, or null when it can.
+ */
+void draw_remove_action(const char* refusal) noexcept {
+    ImGui::BeginDisabled(refusal != nullptr);
+    const bool pressed =
+        ImGui::Button("Remove from Inventory", {-FLT_MIN, pixels(controls::kActionHeight)});
+    ImGui::EndDisabled();
+    if (refusal != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", refusal);
+    }
+    if (pressed) {
         request_removal(model().selection.instanceSoid);
     }
 }
@@ -258,15 +291,17 @@ void draw_item_frame(const edit::CatalogItem& definition,
         settle_stat_targets(*owned, stats.released);
     }
     if (sockets != 0) {
-        tooltip::draw_rule();
+        // The sockets meet the rule over them, so the intrinsic's panel runs up to it.
+        tooltip::draw_row_rule();
         draw_perk_editor(definition, *owned, inner);
     }
     tooltip::end_frame();
 }
 
 /**
- * Draws the row that sends a stowed item to another character, with a button for each. A
- * character whose class cannot hold the item keeps its button, disabled, so the row says why.
+ * Draws the row that sends a stowed item to another character, under a label naming it, with a
+ * button for each. A character whose class cannot hold the item keeps its button, disabled, so
+ * the row says why.
  * @return True when the item was sent, which takes it off this character: the caller must not
  * read the item again.
  */
@@ -277,7 +312,12 @@ void draw_item_frame(const edit::CatalogItem& definition,
         return false;
     }
     controls::space(controls::kSectionSpacing);
-    controls::field_label(kSendLabel, ImGui::CalcTextSize(kSendLabel).x);
+    tooltip::draw_label(kSendLabel);
+    // The characters share the row evenly at the pane's action height, as the grant's actions do.
+    const float others = static_cast<float>(account.characterCount - 1);
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const ImVec2 size{(ImGui::GetContentRegionAvail().x - (spacing * (others - 1.0F))) / others,
+                      pixels(controls::kActionHeight)};
     bool first = true;
     for (std::size_t index = 0; index < account.characterCount; ++index) {
         if (index == state.character) {
@@ -291,7 +331,7 @@ void draw_item_frame(const edit::CatalogItem& definition,
         const bool fits = edit::fits_class(definition, other.characterClass);
         ImGui::PushID(static_cast<int>(index));
         ImGui::BeginDisabled(!fits);
-        const bool pressed = ImGui::SmallButton(character_label(index).c_str());
+        const bool pressed = ImGui::Button(character_label(index).c_str(), size);
         ImGui::EndDisabled();
         if (!fits && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             ImGui::SetTooltip("This item belongs to another class.");
@@ -310,8 +350,9 @@ void draw_owned_actions(const edit::CatalogItem& definition, edit::Item& item) n
         controls::space(controls::kSectionSpacing);
         const float column = ImGui::CalcTextSize("Quantity").x;
         controls::field_label("Quantity", column);
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        const bool quantityChanged = ImGui::InputInt("##owned_quantity", &item.quantity);
+        // The grant's own quantity field: typed, at the same width, with no steppers.
+        ImGui::SetNextItemWidth(pixels(kGrantFieldWidth));
+        const bool quantityChanged = ImGui::InputInt("##owned_quantity", &item.quantity, 0, 0);
         if (quantityChanged) {
             item.quantity =
                 std::clamp(item.quantity, 1, (std::max)(1, definition.detail.maxStackSize));
@@ -323,10 +364,9 @@ void draw_owned_actions(const edit::CatalogItem& definition, edit::Item& item) n
     if (stowed && !item.postmaster && draw_send_row(definition, item)) {
         return;
     }
-    if (stowed && (item.flags & inv::kLockedItemFlag) == 0) {
-        controls::space(controls::kSectionSpacing);
-        draw_remove_action();
-    }
+    const bool locked = (item.flags & inv::kLockedItemFlag) != 0;
+    controls::space(controls::kSectionSpacing);
+    draw_remove_action(!stowed ? kUnequipToRemove : locked ? kUnlockToRemove : nullptr);
 }
 
 } // namespace
@@ -356,18 +396,21 @@ void draw_removal_confirm() noexcept {
         ImGui::EndPopup();
         return;
     }
+    // The item is named at the pane's subheading size, and one muted line says whose inventory it
+    // leaves and how to get it back, which is all the player needs to answer.
     const edit::CatalogItem* definition = state.catalog.find(item->definitionHash);
-    ImGui::TextUnformatted(definition != nullptr ? definition->name.c_str() : "This Item");
-    ImGui::TextDisabled("This removes it from the character's inventory.");
+    controls::title(definition != nullptr ? definition->name.c_str() : "This Item",
+                    controls::kSubheadingScale);
+    const std::string owner = character_label(state.character);
+    ImGui::TextColored(tooltip::muted(),
+                       "Removes it from %s's inventory. Undo brings it back.",
+                       owner.c_str());
     controls::space(controls::kRowSpacing);
-    if (controls::primary_button("Remove", {pixels(kConfirmButtonWidth), 0.0F})) {
+    const controls::Answer answer = controls::confirm_footer("Remove");
+    if (answer == controls::Answer::confirm) {
         (void)erase_owned_item(state.removal);
-        state.removal = 0;
-        ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", {pixels(kConfirmButtonWidth), 0.0F})
-        || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    if (answer != controls::Answer::none) {
         state.removal = 0;
         ImGui::CloseCurrentPopup();
     }
@@ -378,11 +421,11 @@ void draw_inspector() noexcept {
     Model& state = model();
     const edit::CatalogItem* definition = state.catalog.find(state.selection.definitionHash);
     if (definition == nullptr) {
-        ImGui::TextDisabled("No Item Selected");
+        ImGui::TextDisabled("No item selected.");
         return;
     }
-    draw_pane_header(selected_item());
-    // Unequipping moves the item between two arrays, so the pointer is taken again after it.
+    draw_pane_header(*definition, selected_item());
+    // Equipping and unequipping move the item between two arrays, so the pointer is taken again.
     edit::Item* owned = selected_item();
     controls::space(controls::kRowSpacing);
     draw_item_frame(*definition, owned, ImGui::GetContentRegionAvail().x);

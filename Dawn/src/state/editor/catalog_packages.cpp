@@ -9,6 +9,7 @@
 #include "../../../vendor/sundial/class_items.h"
 #include <algorithm>
 #include <memory>
+#include <unordered_set>
 
 namespace dawn::state::editor {
 namespace {
@@ -26,7 +27,14 @@ struct IconSweep {
     const std::unordered_map<std::uint32_t, std::uint32_t>* rows{};
     std::unordered_map<std::string, std::uint16_t> families;
     bool overflowed{};
+    /** True on the pass for bare images, which leaves out every package that has containers. */
+    bool bare{};
+    /** Packages whose containers were swept. Their bare images are only those containers' layers. */
+    std::unordered_set<std::string> containerPackages;
 };
+
+/** Offset of an icon container's primary layer, which is an image record. */
+constexpr std::size_t kIconPrimaryLayer = 0x14;
 
 /**
  * Icon container rows holding the ammunition marks: one round in white, two in green, three in
@@ -96,7 +104,7 @@ void sort_icons(std::vector<IconRow>& icons) {
     });
 }
 
-/** Records one swept icon container against the package family that declares it. */
+/** Records one swept icon container or bare image against the package family that declares it. */
 bool visit_icon(void* context, const reader::ClassEntry& entry) noexcept {
     auto& sweep = *static_cast<IconSweep*>(context);
     try {
@@ -109,6 +117,7 @@ bool visit_icon(void* context, const reader::ClassEntry& entry) noexcept {
         family.reserve(entry.packageFamily.size());
         for (const wchar_t character : entry.packageFamily)
             family.push_back(character < 0x80 ? static_cast<char>(character) : '?');
+        if (sweep.bare && sweep.containerPackages.contains(family)) return true;
         const auto [it, added] = sweep.families.try_emplace(
             family, static_cast<std::uint16_t>(sweep.packages->size()));
         if (added) sweep.packages->push_back(family);
@@ -533,6 +542,11 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
         // rest of the installed packages would be swept for.
         std::vector<std::byte> probe;
         if (sample != 0) (void)reader::read_tag(source, *scope.scratch, sample, probe, result.iconClass);
+        // Its primary layer names the class of an image record, the form interface art is kept in.
+        std::uint32_t primary{};
+        std::vector<std::byte> image;
+        if (strings::read(std::span<const std::byte>(probe), kIconPrimaryLayer, primary) && primary != 0)
+            (void)reader::read_tag(source, *scope.scratch, primary, image, result.imageClass);
         result.iconPackages.emplace_back("investment");
         for (const auto& [tag, row] : investment) result.icons.push_back({tag, row, 0});
         sort_icons(result.icons);
@@ -839,6 +853,18 @@ bool sweep_icons(const Catalog& catalog, std::vector<IconRow>& icons, std::vecto
     reader::ScanResult scan{};
     const bool complete =
         reader::scan_class_entries(directory.chars.data(), catalog.iconClass, &visit_icon, &sweep, scan);
+    // The interface packages keep their art as bare images, with no container to be swept for. A
+    // package that has containers is left out of that pass, since its bare images are their layers.
+    // The containers stand on their own, so a pass that stops short only leaves some images out.
+    if (complete && catalog.imageClass != 0) {
+        try {
+            for (const auto& [family, index] : sweep.families) sweep.containerPackages.insert(family);
+            sweep.bare = true;
+            (void)reader::scan_class_entries(directory.chars.data(), catalog.imageClass, &visit_icon, &sweep, scan);
+        } catch (...) {
+            // The images found before the throw are kept, as a pass that stops short keeps them.
+        }
+    }
     // The owners only name what uses an icon, so a sweep that finds none of them still stands.
     try {
         const reader::Source source{directory.chars.data(), &scope.keys};

@@ -27,6 +27,11 @@ constexpr float kMaximumDpiScale = 2.5F;
 constexpr float kAuthoredScale = 1.0F;
 /** 2x rasterization keeps scaled text crisp with no rebuild on a DPI change. */
 constexpr float kRasterizerDensity = 2.0F;
+/**
+ * The atlas grows as text asks for new sizes and faces. At this size it stops growing and drops the
+ * sizes no frame has drawn lately instead, so it always fits the UI arena.
+ */
+constexpr int kAtlasMaximumExtent = 2048;
 
 /** Ownership held while the atlas borrows installed-font bytes. */
 struct State {
@@ -95,6 +100,8 @@ bool initialize(HMODULE module, float basePixelSize) noexcept {
     const float priorBasePixelSize = ImGui::GetStyle().FontSizeBase;
     const float priorMainScale = ImGui::GetStyle().FontScaleMain;
     atlas->Clear();
+    atlas->TexMaxWidth = kAtlasMaximumExtent;
+    atlas->TexMaxHeight = kAtlasMaximumExtent;
     io.FontDefault = nullptr;
 
     installed::DataView installedData{};

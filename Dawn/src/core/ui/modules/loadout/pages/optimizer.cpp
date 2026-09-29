@@ -28,25 +28,29 @@ constexpr int kStatCeiling = edit::kStatCap;
 constexpr float kTargetSpeed = 0.25F;
 /** Seconds the minimums rest before a plan is worked out for them, as Sundial waits. */
 constexpr double kSettleSeconds = 0.15;
-/** The table: a column per stat, each as wide as its minimum's field and a gap, and the piece column takes the rest. */
-constexpr float kStatColumn = 44.0F;
-constexpr float kTargetFieldWidth = 38.0F;
+/**
+ * The table: a column per stat, as wide as the three digits a value runs to and a gap, with its
+ * minimum's field a little narrower; the Keep column while swaps are allowed; and the piece column,
+ * which takes the rest.
+ */
+constexpr float kStatColumn = 36.0F;
+constexpr float kTargetFieldWidth = 30.0F;
 /** One piece row: its icon, the padding around it, and the gap to its name. */
 constexpr float kPieceIconExtent = 32.0F;
 constexpr float kRowPadding = 4.0F;
 constexpr float kIconGap = 8.0F;
-constexpr float kCloseWidth = 100.0F;
-/** 256 bytes hold the head's muted line, a piece's line, or an outcome naming every change. */
+/** 256 bytes hold a piece's line, or an outcome naming every change. */
 constexpr std::size_t kLineCapacity = 256;
-constexpr const char* kTargetsHeading = "Minimums";
 constexpr const char* kClearLabel = "Clear";
 constexpr const char* kClearTip = "Reset every minimum.";
 constexpr const char* kSwapsLabel = "Swap in Better Armor";
 constexpr const char* kSwapsTip = "Allow swapping in stowed armor. Locked armor is never changed.";
-constexpr const char* kKeepLabel = "Keep";
+/** What each of the Keep column's checkboxes does, said under the pointer, since the column has no head. */
 constexpr const char* kKeepTip = "Keep this piece. Its mods can still change.";
 constexpr const char* kAdjustLabel = "Adjust Armor";
-constexpr const char* kAdjustTip = "Apply every change. Undo reverts it.";
+constexpr const char* kAdjustTip = "Apply every change. Undo reverts it. Shortcut: Enter.";
+/** Said under the pointer on Adjust Armor when no plan could be found for the minimums. */
+constexpr const char* kNoPlanTip = "No plan meets these minimums.";
 constexpr const char* kNowLabel = "Now";
 constexpr const char* kProjectedLabel = "Projected";
 
@@ -56,13 +60,38 @@ constexpr const char* kProjectedLabel = "Projected";
     return std::any_of(targets.begin(), targets.end(), [](int value) { return value > 0; });
 }
 
-/** @return The plan found for the armor and minimums as they stand now, or null while there is none. */
-[[nodiscard]] const edit::ArmorPlan* current_plan() noexcept {
+/**
+ * @return The last plan found for the armor as it stands, or null while there is none. It may answer
+ * minimums since changed, which the sheet shows dimmed until the plan for the new ones is in.
+ */
+[[nodiscard]] const edit::ArmorPlan* shown_plan() noexcept {
     const Optimizer& optimizer = model().optimizer;
-    return optimizer.plan.finished && optimizer.input != nullptr && optimizer.planInput == optimizer.input
-                   && optimizer.planTargets == optimizer.targets && targeted()
+    return optimizer.plan.finished && optimizer.input != nullptr && optimizer.planInput == optimizer.input && targeted()
                ? &optimizer.plan
                : nullptr;
+}
+
+/** @return The plan found for the armor and minimums as they stand now, the only one Adjust Armor puts on, or null. */
+[[nodiscard]] const edit::ArmorPlan* current_plan() noexcept {
+    const Optimizer& optimizer = model().optimizer;
+    const edit::ArmorPlan* plan = shown_plan();
+    return plan != nullptr && optimizer.planTargets == optimizer.targets ? plan : nullptr;
+}
+
+/** @return True while the plan shown answers minimums since changed, so it is drawn dimmed. */
+[[nodiscard]] bool plan_stale() noexcept {
+    return shown_plan() != nullptr && current_plan() == nullptr;
+}
+
+/**
+ * @return True when the plan worked out for the armor and minimums as they stand came back
+ * unfinished, as it does for armor that has to keep two exotics on. Its job is left standing, so
+ * the same plan is not worked out again every frame.
+ */
+[[nodiscard]] bool plan_failed() noexcept {
+    const Optimizer& optimizer = model().optimizer;
+    return optimizer.job && optimizer.job->done.load(std::memory_order_acquire) && !optimizer.job->plan.finished
+           && optimizer.job->input == optimizer.input && optimizer.job->targets == optimizer.targets;
 }
 
 /** @return The other characters of this character's class, whose stowed armor a swap can bring over. */
@@ -158,17 +187,19 @@ void start_job() noexcept {
     optimizer.job = std::move(job);
 }
 
-/** Takes in the plan the worker finished, when it answers the armor and minimums still standing. */
+/**
+ * Takes in the plan the worker finished. A plan that came back unfinished is not taken, and its job
+ * is left standing as the answer for its armor and minimums, so the sheet says no plan meets them
+ * rather than working them out again every frame. A new job lets it go.
+ */
 void collect_job() noexcept {
     Optimizer& optimizer = model().optimizer;
-    if (!optimizer.job || !optimizer.job->done.load(std::memory_order_acquire)) {
+    if (!optimizer.job || !optimizer.job->done.load(std::memory_order_acquire) || !optimizer.job->plan.finished) {
         return;
     }
-    if (optimizer.job->plan.finished) {
-        optimizer.plan = std::move(optimizer.job->plan);
-        optimizer.planInput = optimizer.job->input;
-        optimizer.planTargets = optimizer.job->targets;
-    }
+    optimizer.plan = std::move(optimizer.job->plan);
+    optimizer.planInput = optimizer.job->input;
+    optimizer.planTargets = optimizer.job->targets;
     optimizer.job.reset();
 }
 
@@ -200,6 +231,7 @@ void refresh() noexcept {
         return;
     }
     const bool answered = current_plan() != nullptr;
+    // A job for the armor and minimums standing is still working, or came back with no plan.
     const bool underway = optimizer.job && optimizer.job->input == optimizer.input && optimizer.job->targets == optimizer.targets;
     if (answered || underway || ImGui::IsAnyItemActive() || now - optimizer.changedAt < kSettleSeconds) {
         return;
@@ -224,17 +256,17 @@ void refresh() noexcept {
     return text;
 }
 
-/** @return What one piece's refit changes, as "2 stat plugs and a Masterwork", or empty for nothing. */
+/** @return What one piece's refit changes, as "2 stat plugs and 1 Masterwork", or empty for nothing. */
 [[nodiscard]] std::string refit_words(const edit::ArmorPlan::Piece& piece) {
     std::vector<std::string> parts;
     if (piece.allocations != 0) {
         parts.push_back(counted(piece.allocations, "stat plug", "stat plugs"));
     }
     if (piece.mods != 0) {
-        parts.push_back(piece.mods == 1 ? std::string("a stat mod") : counted(piece.mods, "stat mod", "stat mods"));
+        parts.push_back(counted(piece.mods, "stat mod", "stat mods"));
     }
     if (piece.masterworks != 0) {
-        parts.push_back("a Masterwork");
+        parts.push_back(counted(piece.masterworks, "Masterwork", "Masterworks"));
     }
     return listed(parts);
 }
@@ -256,38 +288,37 @@ void refresh() noexcept {
     return text;
 }
 
-/** @return The head's muted line: whose armor, then what the plan comes to. */
-[[nodiscard]] std::string head_line() {
-    const Model& state = model();
-    std::string status;
-    const edit::ArmorPlan* plan = current_plan();
-    if (!targeted()) {
-        status = "Set a minimum";
-    } else if (plan == nullptr) {
-        status = "Working";
-    } else if (plan->exact()) {
-        status = plan->changes() ? "Every minimum met" : "Already meets every minimum";
-    } else {
-        std::size_t short_of = 0;
-        for (const int value : plan->shortfalls) {
-            short_of += value > 0 ? 1U : 0U;
-        }
-        status = counted(static_cast<unsigned>(short_of), "minimum", "minimums") + " short";
-    }
-    return character_label(state.character) + "  /  " + status;
-}
-
-/** Where the table's columns sit: the piece column's left edge, and where the first stat column starts. */
+/**
+ * Where the table's columns sit: the piece column's left edge and where its words stop, the centre
+ * of the Keep column, which stands while swaps are allowed, and where the first stat column starts.
+ */
 struct Columns {
     float left{};
+    float words{};
+    bool keeps{};
+    float keep{};
     float stats{};
     float width{};
 };
 
+/** @return The Keep column's width, which is its checkbox's. */
+[[nodiscard]] float keep_width() noexcept {
+    return ImGui::GetFrameHeight();
+}
+
 [[nodiscard]] Columns columns() noexcept {
-    const float left = ImGui::GetCursorScreenPos().x;
-    const float width = ImGui::GetContentRegionAvail().x;
-    return {left, left + width - (pixels(kStatColumn) * static_cast<float>(edit::Stats{}.size())), width};
+    Columns table;
+    table.left = ImGui::GetCursorScreenPos().x;
+    table.width = ImGui::GetContentRegionAvail().x;
+    table.stats = table.left + table.width - (pixels(kStatColumn) * static_cast<float>(edit::Stats{}.size()));
+    table.keeps = model().optimizer.options.swaps;
+    const float gap = pixels(controls::kGroupGap);
+    table.words = table.stats - gap;
+    if (table.keeps) {
+        table.keep = table.words - (keep_width() * 0.5F);
+        table.words -= keep_width() + gap;
+    }
+    return table;
 }
 
 [[nodiscard]] float column_center(const Columns& columns, std::size_t shown) noexcept {
@@ -323,7 +354,7 @@ void draw_stat_head(std::size_t stat, float center, float top) noexcept {
     }
 }
 
-/** Draws the row of stat icons that heads the table's columns. */
+/** Draws the row of heads over the table's columns: each stat's icon. */
 void draw_heads(const Columns& columns) noexcept {
     const Model& state = model();
     const float top = ImGui::GetCursorScreenPos().y;
@@ -333,22 +364,11 @@ void draw_heads(const Columns& columns) noexcept {
     ImGui::Dummy({columns.width, ImGui::GetTextLineHeight()});
 }
 
-/** Draws the minimums row: its label and Clear in the piece column, then a field under each stat. */
+/** Draws the minimums row: a field under each stat, which the stat's own head names. */
 void draw_minimums(const Columns& columns) noexcept {
     Model& state = model();
     Optimizer& optimizer = state.optimizer;
     const float top = ImGui::GetCursorScreenPos().y;
-    ImGui::AlignTextToFramePadding();
-    tooltip::draw_label(kTargetsHeading);
-    ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
-    ImGui::BeginDisabled(!targeted());
-    if (ImGui::SmallButton(kClearLabel)) {
-        optimizer.targets = {};
-    }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-        ImGui::SetTooltip("%s", kClearTip);
-    }
     const float field = pixels(kTargetFieldWidth);
     for (std::size_t shown = 0; shown < optimizer.targets.size(); ++shown) {
         const std::size_t stat = state.catalog.statOrder[shown];
@@ -368,7 +388,7 @@ void draw_minimums(const Columns& columns) noexcept {
 [[nodiscard]] std::string piece_line(const edit::ArmorCandidate& piece, const edit::ArmorPlan::Piece* planned) {
     const std::size_t who = model().character;
     if (piece.instance == 0) {
-        return "Nothing Equipped";
+        return "Nothing equipped";
     }
     if (piece.locked) {
         return "Locked";
@@ -423,14 +443,35 @@ void explain_piece(const edit::ArmorCandidate& piece, const edit::ArmorPlan::Pie
 }
 
 /**
+ * Sets one line of a piece row within a width, and cuts it short only when it runs past it.
+ * @return True when it was cut, so the row can show it whole under the pointer.
+ */
+[[nodiscard]] bool fitted_text(const std::string& text, ImVec2 at, float width, ImU32 color) noexcept {
+    if (ImGui::CalcTextSize(text.c_str()).x <= width) {
+        ImGui::GetWindowDrawList()->AddText(at, color, text.c_str());
+        return false;
+    }
+    art::clipped_text(text, at, width, color);
+    return true;
+}
+
+/** Dims what is drawn until the matching `ImGui::PopStyleVar`, as a disabled control is dimmed. */
+void push_dimmed() noexcept {
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * ImGui::GetStyle().DisabledAlpha);
+}
+
+/**
  * Draws one armor slot's row: the piece the plan puts there, what it changes on it, its stats once
- * refitted, and a Keep toggle while swaps are allowed. A stat the plan moves is set in full text, one
- * it leaves is muted, so the changes read at a glance.
+ * refitted, and its Keep checkbox while swaps are allowed. A stat the plan moves is set in full text,
+ * one it leaves is muted, so the changes read at a glance, and a plan answering minimums since
+ * changed is dimmed. The piece's own tooltip shows over the row, and the whole second line over
+ * that line when it had to be cut.
  */
 void draw_piece(const Columns& columns, std::size_t slot) noexcept {
     Model& state = model();
     Optimizer& optimizer = state.optimizer;
-    const edit::ArmorPlan* plan = current_plan();
+    const edit::ArmorPlan* plan = shown_plan();
+    const bool stale = plan_stale();
     const auto& candidates = optimizer.input->slots[slot];
     const edit::ArmorPlan::Piece* planned = plan != nullptr ? &plan->pieces[slot] : nullptr;
     const std::size_t index = planned != nullptr && planned->candidate < candidates.size() ? planned->candidate : 0;
@@ -447,27 +488,29 @@ void draw_piece(const Columns& columns, std::size_t slot) noexcept {
     if (definition != nullptr) {
         art::icon(*definition, {origin.x, origin.y + padding}, extent);
     }
-    // The Keep toggle sits at the far end of the piece column, and the words stop short of it. It only
-    // shows while a swap could take the slot's piece away.
+    // The Keep checkbox stands in its own column, under its head, and only while a swap could take
+    // the slot's piece away.
     ImGui::PushID(static_cast<int>(slot));
-    float wordsEnd = columns.stats - pixels(controls::kGroupGap);
     bool keepHovered = false;
-    if (optimizer.options.swaps && !worn.locked && worn.instance != 0) {
-        const float keepWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(kKeepLabel).x;
-        ImGui::SetCursorScreenPos({wordsEnd - keepWidth, origin.y + ((height - ImGui::GetFrameHeight()) * 0.5F)});
-        (void)ImGui::Checkbox(kKeepLabel, &optimizer.options.kept[slot]);
+    if (columns.keeps && !worn.locked && worn.instance != 0) {
+        const float box = ImGui::GetFrameHeight();
+        ImGui::SetCursorScreenPos({columns.keep - (box * 0.5F), origin.y + ((height - box) * 0.5F)});
+        (void)controls::checkbox("##keep", &optimizer.options.kept[slot]);
         keepHovered = ImGui::IsItemHovered();
         if (keepHovered) {
             ImGui::SetTooltip("%s", kKeepTip);
         }
-        wordsEnd -= keepWidth + pixels(controls::kGroupGap);
     }
     const float textLeft = origin.x + extent + pixels(kIconGap);
-    const float textWidth = (std::max)(0.0F, wordsEnd - textLeft);
+    const float textWidth = (std::max)(0.0F, columns.words - textLeft);
     const float textTop = origin.y + ((height - (line * 2.0F)) * 0.5F);
+    const std::string words = piece_line(piece, planned);
+    if (stale) {
+        push_dimmed();
+    }
     art::clipped_text(definition != nullptr ? definition->name : std::string(edit::kSlots[edit::kFirstPlanSlot + slot]),
                       {textLeft, textTop}, textWidth, ImGui::GetColorU32(definition != nullptr ? ImGuiCol_Text : ImGuiCol_TextDisabled));
-    art::clipped_text(piece_line(piece, planned), {textLeft, textTop + line}, textWidth, ImGui::GetColorU32(tooltip::muted()));
+    const bool cut = fitted_text(words, {textLeft, textTop + line}, textWidth, ImGui::GetColorU32(tooltip::muted()));
     const edit::Stats& after = planned != nullptr ? planned->shown : piece.shown;
     for (std::size_t shown = 0; shown < after.size(); ++shown) {
         const std::size_t stat = state.catalog.statOrder[shown];
@@ -475,9 +518,17 @@ void draw_piece(const Columns& columns, std::size_t slot) noexcept {
         draw_value(columns, shown, origin.y + ((height - line) * 0.5F), after[stat],
                    ImGui::GetColorU32(moved ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : tooltip::muted()));
     }
+    if (stale) {
+        ImGui::PopStyleVar();
+    }
     const ImVec2 corner{origin.x + columns.width, origin.y + height};
     if (!keepHovered && ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(origin, corner)) {
-        explain_piece(piece, planned);
+        const ImVec2 wordsTop{textLeft, textTop + line};
+        if (cut && ImGui::IsMouseHoveringRect(wordsTop, {textLeft + textWidth, wordsTop.y + line})) {
+            ImGui::SetTooltip("%s", words.c_str());
+        } else {
+            explain_piece(piece, planned);
+        }
     }
     draw->AddLine({origin.x, corner.y}, corner, ImGui::GetColorU32(tooltip::rule_color()));
     ImGui::SetCursorScreenPos(origin);
@@ -485,17 +536,33 @@ void draw_piece(const Columns& columns, std::size_t slot) noexcept {
     ImGui::PopID();
 }
 
-/** Draws one totals row: its label in the piece column and a total under each stat. */
-void draw_totals(const Columns& columns, const char* label, const edit::Stats& totals, bool projected) noexcept {
+/**
+ * Draws one totals row: its label set against the first stat column, as a table's total row is, and
+ * a total under each stat. The projected row is the shown plan's, dimmed while that plan answers
+ * minimums since changed.
+ * @param totals The totals, or null for a row that has none to show yet.
+ */
+void draw_totals(const Columns& columns, const char* label, const edit::Stats* totals, bool projected) noexcept {
     const Model& state = model();
+    const bool stale = projected && plan_stale();
+    if (stale) {
+        push_dimmed();
+    }
     const float top = ImGui::GetCursorScreenPos().y;
-    tooltip::draw_label(label);
-    for (std::size_t shown = 0; shown < totals.size(); ++shown) {
+    const float labelLeft = columns.stats - ImGui::GetStyle().ItemSpacing.x - controls::spaced_width(label);
+    (void)controls::spaced(label, {(std::max)(columns.left, labelLeft), top}, ImGui::GetColorU32(tooltip::muted()));
+    for (std::size_t shown = 0; totals != nullptr && shown < totals->size(); ++shown) {
         const std::size_t stat = state.catalog.statOrder[shown];
-        // A projected total short of its minimum is set in the waiting colour, and its row's words say by how much.
-        const bool short_of = projected && state.optimizer.targets[stat] > 0 && (std::min)(totals[stat], kStatCeiling) < state.optimizer.targets[stat];
+        const int total = (*totals)[stat];
+        // A projected total short of the minimum its plan answers is set in the waiting colour.
+        const int minimum = state.optimizer.planTargets[stat];
+        const bool short_of = projected && minimum > 0 && (std::min)(total, kStatCeiling) < minimum;
         const ImVec4 color = !projected ? tooltip::muted() : short_of ? tooltip::pending() : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-        draw_value(columns, shown, top, totals[stat], ImGui::GetColorU32(color));
+        draw_value(columns, shown, top, total, ImGui::GetColorU32(color));
+    }
+    ImGui::Dummy({columns.width, ImGui::GetTextLineHeight()});
+    if (stale) {
+        ImGui::PopStyleVar();
     }
 }
 
@@ -512,7 +579,7 @@ void adjust() noexcept {
     try {
         adjusted = edit::apply_armor_plan(*state.draft, state.catalog, *optimizer.planInput, *plan, refused);
     } catch (...) {
-        refused = "Armor not adjusted.";
+        refused = "Can't adjust your armor.";
     }
     if (!adjusted) {
         state.status = refused;
@@ -537,39 +604,89 @@ void adjust() noexcept {
     record_edit(true);
 }
 
-/** Draws the options: whether a plan may swap pieces, and whether it may reach the other characters' armor. */
-void draw_options() noexcept {
-    Model& state = model();
-    edit::ArmorOptions& options = state.optimizer.options;
-    (void)ImGui::Checkbox(kSwapsLabel, &options.swaps);
+/** @return The width a checkbox takes with its label, as `controls::checkbox` lays it out. */
+[[nodiscard]] float checkbox_width(const char* label) noexcept {
+    return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
+}
+
+/**
+ * Draws the head's own controls at the far end of its two lines: whether a plan may swap pieces,
+ * level with the title, and level with the muted line under it, whether it may reach the other
+ * characters' armor, while there are any, and Clear, over the minimum fields it empties.
+ * @param head Top-left of the head in screen space.
+ * @param under Where the head ended, under its muted line.
+ * @param right Screen X both lines end at.
+ */
+void draw_head_controls(ImVec2 head, ImVec2 under, float right) noexcept {
+    Optimizer& optimizer = model().optimizer;
+    edit::ArmorOptions& options = optimizer.options;
+    const float box = ImGui::GetFrameHeight();
+    const float line = ImGui::GetTextLineHeight();
+    const float spacing = ImGui::GetStyle().ItemSpacing.y;
+    const float detail = under.y - spacing - line;
+    const float title = detail - spacing - head.y;
+    ImGui::SetCursorScreenPos({right - checkbox_width(kSwapsLabel), head.y + ((title - box) * 0.5F)});
+    (void)controls::checkbox(kSwapsLabel, &options.swaps);
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", kSwapsTip);
     }
+    const float clear = ImGui::CalcTextSize(kClearLabel).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
+    ImGui::SetCursorScreenPos({right - clear, detail});
+    ImGui::BeginDisabled(!targeted());
+    if (ImGui::SmallButton(kClearLabel)) {
+        optimizer.targets = {};
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", kClearTip);
+    }
     // The other characters of this class hold armor a swap can bring over, when there are any.
     if (classmates() != 0) {
-        ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
         char label[kLineCapacity]{};
         (void)std::snprintf(label, sizeof label, "Use Other %ss' Armor", art::class_name(character().characterClass));
+        ImGui::SetCursorScreenPos(
+            {right - clear - pixels(controls::kGroupGap) - checkbox_width(label), detail + ((line - box) * 0.5F)});
         ImGui::BeginDisabled(!options.swaps);
-        (void)ImGui::Checkbox(label, &options.others);
+        (void)controls::checkbox(label, &options.others);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             ImGui::SetTooltip("Also swap in armor stowed on your other characters.");
         }
     }
+    ImGui::SetCursorScreenPos(under);
+}
+
+/** @return The height of the footer: the outcome line, a row gap, and the row of actions. */
+[[nodiscard]] float footer_height() noexcept {
+    return ImGui::GetTextLineHeight() + pixels(controls::kRowSpacing) + pixels(controls::kActionHeight);
 }
 
 /**
- * Draws the sheet's actions: Adjust Armor, white only while there is a change to make, and Close at the
- * far end. They stand at the height of a field, as every sheet's footer does.
+ * Moves the cursor to the top of the footer, so it stands on the sheet's bottom edge whatever the
+ * sheet holds above it. The foot of the content region is the sheet's height less its padding.
+ * @return Where the row of actions starts, as a window position.
+ */
+[[nodiscard]] float anchor_footer() noexcept {
+    const float foot = ImGui::GetCursorPosY() + ImGui::GetContentRegionAvail().y;
+    const float top = (std::max)(ImGui::GetCursorPosY(), foot - footer_height());
+    ImGui::SetCursorPosY(top);
+    return top + ImGui::GetTextLineHeight() + pixels(controls::kRowSpacing);
+}
+
+/**
+ * Draws the sheet's action at the height of a sheet's actions: Adjust Armor, white only while there
+ * is a change to make. Enter adjusts as the button does, unless a minimum is being typed in or held,
+ * and Escape closes the sheet.
  */
 void draw_actions() noexcept {
     const edit::ArmorPlan* plan = current_plan();
     const bool ready = plan != nullptr && plan->changes();
-    const float action = ImGui::GetFrameHeight();
+    const float action = pixels(controls::kActionHeight);
     const float adjustWidth = ImGui::CalcTextSize(kAdjustLabel).x + (ImGui::GetStyle().FramePadding.x * 4.0F);
+    const bool entered = ready && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive()
+                         && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
     if (ready) {
-        if (controls::primary_button(kAdjustLabel, {adjustWidth, action})) {
+        if (controls::primary_button(kAdjustLabel, {adjustWidth, action}) || entered) {
             adjust();
         }
         if (ImGui::IsItemHovered()) {
@@ -580,17 +697,15 @@ void draw_actions() noexcept {
         (void)ImGui::Button(kAdjustLabel, {adjustWidth, action});
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-            ImGui::SetTooltip("%s", !targeted()     ? "Set a minimum first."
+            ImGui::SetTooltip("%s", !targeted()       ? "Set a minimum first."
+                                    : plan_failed()   ? kNoPlanTip
                                     : plan == nullptr ? "Still working."
                                                       : "No changes needed.");
         }
     }
-    const float closeWidth = pixels(kCloseWidth);
-    ImGui::SameLine(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - closeWidth);
     // Escape closes a field's own popup first, and a field being typed in keeps it.
-    const bool escape = ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput
-                        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-    if (ImGui::Button("Close", {closeWidth, action}) || escape) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput
+        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         ImGui::CloseCurrentPopup();
     }
 }
@@ -615,9 +730,12 @@ void draw_optimizer_modal() noexcept {
     refresh();
     Model& state = model();
     Optimizer& optimizer = state.optimizer;
-    tooltip::draw_sheet_head(kOptimizerTitle, head_line().c_str());
-    controls::space(controls::kSectionSpacing);
-    draw_options();
+    // The head names the sheet and whose armor it is; the options and Clear sit at its far end, so
+    // the table starts right under it.
+    const ImVec2 head = ImGui::GetCursorScreenPos();
+    const float right = head.x + ImGui::GetContentRegionAvail().x;
+    tooltip::draw_sheet_head(kOptimizerTitle, character_label(state.character).c_str());
+    draw_head_controls(head, ImGui::GetCursorScreenPos(), right);
     controls::space(controls::kSectionSpacing);
     if (!optimizer.input) {
         ImGui::TextColored(tooltip::muted(), "Can't read your armor.");
@@ -631,23 +749,14 @@ void draw_optimizer_modal() noexcept {
             draw_piece(table, slot);
         }
         controls::space(controls::kRowSpacing);
-        draw_totals(table, kNowLabel, optimizer.input->current, false);
-        if (const edit::ArmorPlan* plan = current_plan()) {
-            draw_totals(table, kProjectedLabel, plan->totals, true);
-        } else {
-            tooltip::draw_label(kProjectedLabel);
-        }
+        draw_totals(table, kNowLabel, &optimizer.input->current, false);
+        const edit::ArmorPlan* plan = shown_plan();
+        draw_totals(table, kProjectedLabel, plan != nullptr ? &plan->totals : nullptr, true);
     }
-    // The outcome and the actions sit at the foot of the sheet, whatever the table above them takes.
-    const float below = ImGui::GetTextLineHeight() + ImGui::GetFrameHeight() + (pixels(controls::kRowSpacing) * 2.0F)
-                        + (ImGui::GetStyle().ItemSpacing.y * 3.0F);
-    const float room = ImGui::GetContentRegionAvail().y - below;
-    if (room > 0.0F) {
-        ImGui::Dummy({0.0F, room});
-    }
-    controls::space(controls::kRowSpacing);
+    // The outcome and the actions stand on the sheet's bottom edge, whatever the table above them takes.
+    const float actions = anchor_footer();
     draw_sheet_outcome();
-    controls::space(controls::kRowSpacing);
+    ImGui::SetCursorPosY(actions);
     draw_actions();
     tooltip::end_sheet();
 }

@@ -49,9 +49,6 @@ constexpr const char* kClassNames[]{"Titan", "Hunter", "Warlock"};
 constexpr float kBackdropWeight = 0.17F;
 /** 90 authored pixels is the smallest icon that fits a whole placeholder line. */
 constexpr float kPlaceholderTextMinimumExtent = 90.0F;
-/** Corner radius of the icon backdrop and its frame. */
-constexpr float kIconBackdropRounding = 3.0F;
-constexpr float kIconFrameRounding = 2.0F;
 /** One extra strike per this many pixels of weight, which keeps a stroke solid with no blur. */
 constexpr float kBoldStrikeStep = 0.6F;
 /** 10 authored pixels of slack keep an ellipsis inside its measured column. */
@@ -60,22 +57,24 @@ constexpr float kClipSlack = 10.0F;
 constexpr unsigned char kContinuationMask = 0xC0U;
 constexpr unsigned char kContinuationTag = 0x80U;
 
-/** Separator between the two halves of a card subtitle. */
-constexpr const char* kDetailSeparator = "  /  ";
-
 /**
- * Armory result row geometry. The row is a rarity band, as the game's own item rows are: the
- * icon struck flush into its left edge, the name in capitals in the title cut, the type and slot
- * muted under it.
+ * Item band geometry, which inventory cards and armory rows share.
+ * The band is as tall as the icon it carries, because the icon sits flush inside it. 38 authored
+ * pixels is the shortest band that still clears two lines of text, and it keeps the icon plainly
+ * smaller than the one the tooltip sets.
  */
-constexpr float kResultRowHeight = 52.0F;
-constexpr float kResultTextGap = 8.0F;
-constexpr float kResultTextRightInset = 10.0F;
-constexpr float kResultLineGap = 2.0F;
-constexpr float kResultNameScale = 1.15F;
-constexpr float kResultNameWeight = 0.8F;
-/** A row under the pointer lightens by this much over its band. */
-constexpr ImVec4 kResultHoverWash{1.0F, 1.0F, 1.0F, 0.10F};
+constexpr float kBandHeight = 38.0F;
+/** Stroke weight the band's name is struck with when the build ships no medium cut. */
+constexpr float kBandNameWeight = 0.8F;
+/** Negative: the title face keeps descender room no capital uses, so the type line rides up into it. */
+constexpr float kBandLineGap = -2.0F;
+/** Gap between the icon and the name column beside it, and the room the text keeps at the right. */
+constexpr float kBandTextGap = 7.0F;
+constexpr float kBandTextInset = 6.0F;
+/** Box the padlock of a locked item is fitted into on a band, level with the name. */
+constexpr float kBandLockExtent = 14.0F;
+/** A band under the pointer lightens by this much. */
+constexpr ImVec4 kBandHoverWash{1.0F, 1.0F, 1.0F, 0.10F};
 
 /** @return The tint scaled down to the backdrop weight, at full opacity. */
 [[nodiscard]] ImU32 backdrop_color(const ImVec4& tint) noexcept {
@@ -83,21 +82,20 @@ constexpr ImVec4 kResultHoverWash{1.0F, 1.0F, 1.0F, 0.10F};
         {tint.x * kBackdropWeight, tint.y * kBackdropWeight, tint.z * kBackdropWeight, 1.0F});
 }
 
-/** Draws the text shown in place of an icon the package reader has not produced. */
+/**
+ * Says what an icon the package reader has not produced is doing, where there is room for a word.
+ * A small icon keeps only its tinted backdrop: a letter there read as a button.
+ */
 void draw_icon_placeholder(const edit::CatalogItem& item, ImVec2 origin, float extent) noexcept {
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImU32 color = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const bool loading = item.iconTag != 0 && !preview::unavailable(item.iconTag);
-    if (extent >= pixels(kPlaceholderTextMinimumExtent)) {
-        const char* text = loading ? "Loading Image" : "No Package Image";
-        const ImVec2 size = ImGui::CalcTextSize(text);
-        draw->AddText({origin.x + ((extent - size.x) * 0.5F), origin.y + (extent * 0.5F)}, color, text);
+    if (extent < pixels(kPlaceholderTextMinimumExtent)) {
         return;
     }
-    const char* glyph = item.kind == edit::GearKind::weapon   ? "W"
-                        : item.kind == edit::GearKind::armor  ? "A"
-                                                              : "+";
-    draw->AddText({origin.x + (extent * 0.4F), origin.y + (extent * 0.35F)}, color, glyph);
+    const bool loading = item.iconTag != 0 && !preview::unavailable(item.iconTag);
+    const char* text = loading ? "Loading" : "No image";
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    ImGui::GetWindowDrawList()->AddText({origin.x + ((extent - size.x) * 0.5F), origin.y + ((extent - size.y) * 0.5F)},
+                                        ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                                        text);
 }
 
 /**
@@ -136,7 +134,11 @@ const char* tier_name(std::uint8_t tier) noexcept {
 }
 
 float collection_card_height() noexcept {
-    return std::floor(pixels(kResultRowHeight));
+    return std::floor(band_height());
+}
+
+float band_height() noexcept {
+    return pixels(kBandHeight);
 }
 
 std::string shout(const std::string& value) noexcept {
@@ -160,13 +162,17 @@ void icon(const edit::CatalogItem& item, ImVec2 origin, float extent, bool frame
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec4 tint = rarity_color(item.definition.tier);
     const ImVec2 corner{origin.x + extent, origin.y + extent};
-    draw->AddRectFilled(origin, corner, backdrop_color(tint), pixels(kIconBackdropRounding));
+    draw->AddRectFilled(origin, corner, backdrop_color(tint), pixels(controls::kCardRounding));
     if (!preview::draw(item.iconTag, origin, extent)) {
         draw_icon_placeholder(item, origin, extent);
     }
     if (framed) {
-        draw->AddRect(origin, corner, ImGui::GetColorU32(tint), pixels(kIconFrameRounding));
+        draw->AddRect(origin, corner, ImGui::GetColorU32(tint), pixels(controls::kCardRounding));
     }
+}
+
+bool padlock(ImVec2 origin, float extent, ImU32 tint) noexcept {
+    return preview::draw_fitted(kLockIconTag, origin, {extent, extent}, pixels(1.0F), 1.0F, tint);
 }
 
 /**
@@ -236,8 +242,61 @@ void clipped_text(const std::string& text,
     bold_text(value.c_str(), at, color, weight);
 }
 
+void item_band(const edit::CatalogItem* definition, const char* label, ImVec2 origin, float right, bool lit, bool locked) noexcept {
+    auto* draw = ImGui::GetWindowDrawList();
+    const float band = band_height();
+    const ImVec2 corner{right, origin.y + band};
+    const ImVec4 tint = definition != nullptr ? rarity_color(definition->definition.tier)
+                                              : ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
+    draw->AddRectFilled(origin, corner, ImGui::GetColorU32(tint));
+    if (lit) {
+        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(kBandHoverWash));
+    }
+    if (definition != nullptr) {
+        icon(*definition, origin, band);
+    }
+
+    // The name and its label are centred as a pair against the icon beside them. The name is set
+    // as the tooltip sets it, in capitals in the title cut, so the band and the tooltip agree.
+    const float textLeft = origin.x + band + pixels(kBandTextGap);
+    const float textWidth = right - pixels(kBandTextInset) - textLeft;
+    // A locked item's padlock takes the end of the name's line, as the tooltip's header sets it.
+    const float lock = pixels(kBandLockExtent);
+    const float nameWidth = locked && definition != nullptr ? textWidth - lock - pixels(kBandTextInset) : textWidth;
+    const float line = ImGui::GetTextLineHeight();
+    const float nameSize = ImGui::GetStyle().FontSizeBase * controls::kHeadingScale;
+    const float nameWeight = push_title(nameSize, pixels(kBandNameWeight));
+    const float nameLine = ImGui::GetTextLineHeight();
+    ImGui::PopFont();
+    const std::uint8_t tier = definition != nullptr ? definition->definition.tier : 0;
+    // The second line is the item's type, then the label after it. An empty slot has only the label.
+    std::string detail = definition != nullptr ? definition->type : std::string();
+    // A label named the same as the type, as "Ghost" or "Ship" is, would only say it twice.
+    if (label != nullptr && detail != label) {
+        detail += detail.empty() ? std::string(label) : controls::kDetailSeparator + std::string(label);
+    }
+    const float gap = definition != nullptr && !detail.empty() ? pixels(kBandLineGap) : 0.0F;
+    const float stack = (definition != nullptr ? nameLine : 0.0F) + (detail.empty() ? 0.0F : line);
+    float top = origin.y + ((band - stack - gap) * 0.5F);
+    if (definition != nullptr) {
+        (void)push_title(nameSize, 0.0F);
+        clipped_text(shout(definition->name), {textLeft, top}, nameWidth, band_text(tier), nameWeight);
+        ImGui::PopFont();
+        if (locked) {
+            (void)padlock({right - pixels(kBandTextInset) - lock, top + ((nameLine - lock) * 0.5F)}, lock, band_text(tier));
+        }
+        top += nameLine + gap;
+    }
+    if (!detail.empty()) {
+        // An empty slot's band is the frame's own dark ground rather than a rarity's, so it takes the
+        // muted light text: the dark type a pale band takes all but vanished on it.
+        const ImU32 color = definition != nullptr ? band_text(tier, true) : ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        clipped_text(detail, {textLeft, top}, textWidth, color);
+    }
+}
+
 void collection_card(const edit::CatalogItem& item, float width) noexcept {
-    const float height = pixels(kResultRowHeight);
+    const float height = band_height();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::PushID(static_cast<int>(item.definition.definitionIndex));
     const bool clicked = ImGui::InvisibleButton("collection_item", {width, height});
@@ -246,35 +305,8 @@ void collection_card(const edit::CatalogItem& item, float width) noexcept {
 
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 corner{origin.x + width, origin.y + height};
-    const std::uint8_t tier = item.definition.tier;
-    draw->AddRectFilled(origin, corner, ImGui::GetColorU32(rarity_color(tier)));
-    if (hovered) {
-        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(kResultHoverWash));
-    }
-    icon(item, origin, height);
-
-    // The name and the detail are centred as a pair against the icon, as they are on a card.
-    const float textLeft = origin.x + height + pixels(kResultTextGap);
-    const float textWidth = corner.x - pixels(kResultTextRightInset) - textLeft;
-    const float nameSize = ImGui::GetStyle().FontSizeBase * kResultNameScale;
-    const float nameWeight = push_title(nameSize, pixels(kResultNameWeight));
-    const float nameLine = ImGui::GetTextLineHeight();
-    ImGui::PopFont();
-    const float line = ImGui::GetTextLineHeight();
-    const float gap = pixels(kResultLineGap);
-    float top = origin.y + ((height - nameLine - gap - line) * 0.5F);
-    (void)push_title(nameSize, 0.0F);
-    clipped_text(shout(item.name), {textLeft, top}, textWidth, band_text(tier), nameWeight);
-    ImGui::PopFont();
-    top += nameLine + gap;
-    // The detail line is the type and the slot, or whichever of the two the item has.
-    std::string detail = item.type;
-    if (item.slot < inv::kEquipmentSlotCount) {
-        detail += detail.empty() ? edit::kSlots[item.slot] : kDetailSeparator + std::string(edit::kSlots[item.slot]);
-    }
-    if (!detail.empty()) {
-        clipped_text(detail, {textLeft, top}, textWidth, band_text(tier, true));
-    }
+    // The row is the band an inventory card leads with, labelled with the slot the item fills.
+    item_band(&item, item.slot < inv::kEquipmentSlotCount ? edit::kSlots[item.slot] : nullptr, origin, corner.x, hovered);
 
     if (selected) {
         draw->AddRect(origin,

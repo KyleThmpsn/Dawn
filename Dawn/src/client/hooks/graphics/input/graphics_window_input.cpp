@@ -4,6 +4,7 @@
 #include <bit>
 
 #include "../../../../core/ui/layout/credits/dawn_credits_badge.h"
+#include "../../../../core/ui/modules/loadout/loadout.h"
 #include "../../../../core/ui/modules/logs/logs.h"
 #include "../../../../core/ui/runtime/ui_visibility_runtime.h"
 #include "../renderer/renderer.h"
@@ -87,6 +88,7 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM word, LPARAM
         // Presentation locks are released first, because a deferred action can re-enter here.
         renderer::dispatch_pending_input_release(window);
         core::ui::modules::logs::dispatch_pending_copy(window);
+        core::ui::modules::loadout::dispatch_pending_copy(window);
         core::ui::layout::credits::dispatch_pending();
         return result;
     }

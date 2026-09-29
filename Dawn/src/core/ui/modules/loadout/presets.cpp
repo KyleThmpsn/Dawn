@@ -29,6 +29,10 @@ constexpr std::uint64_t kLargestEntry = 0xFFULL;
 /** An item level is a signed 32-bit number, and an item carries at most this many socket lanes. */
 constexpr std::uint64_t kLargestLevel = 0x7FFFFFFFULL;
 constexpr std::size_t kPlugLimit = state::account::inventory::kPlugCapacity;
+/** A mark some editors put before a UTF-8 file's first line, which holds nothing of the file's own. */
+constexpr std::string_view kByteOrderMark = "\xEF\xBB\xBF";
+/** The key the list is written under, on the line that opens it. */
+constexpr std::string_view kListKey = "\"loadouts\"";
 
 /** Moves past spaces and tabs. */
 void skip_space(std::string_view text, std::size_t& at) noexcept {
@@ -223,10 +227,32 @@ void put_utf8(std::string& out, std::uint32_t code) {
     }
 }
 
+/** @return True when text holds nothing but spaces and the braces, brackets and commas JSON sets around values. */
+[[nodiscard]] bool only_punctuation(std::string_view text) noexcept {
+    return text.find_first_not_of(" \t\r{}[],") == std::string_view::npos;
+}
+
+/**
+ * @return True for a line that holds none of a loadout: blank, or only what the list is written
+ * between, with the list's own key where it opens.
+ */
+[[nodiscard]] bool frames_list(std::string_view line) noexcept {
+    std::size_t at = 0;
+    const std::size_t key = line.find(kListKey);
+    if (key != std::string_view::npos) {
+        at = key;
+        if (!only_punctuation(line.substr(0, key)) || !seek_key(line, at, kListKey)) {
+            return false;
+        }
+    }
+    return only_punctuation(line.substr(at));
+}
+
 /**
  * Reads the loadout one line holds. The writer puts each loadout on a line of its own with its
  * fields in a fixed order, so each field is searched for after the one before it.
- * @return False for a line that does not hold a whole loadout, which is then skipped.
+ * @return False for a line that does not hold exactly one whole loadout, such as one a hand edit
+ * broke or one holding a second loadout after the first, which the file could not be saved without.
  */
 [[nodiscard]] bool read_loadout(std::string_view line, edit::SavedLoadout& out) {
     std::size_t at = 0;
@@ -266,8 +292,9 @@ void put_utf8(std::string& out, std::uint32_t code) {
         if (at >= line.size()) {
             return false;
         }
+        // Only the closing of the loadout and the list may follow its items.
         if (line[at] == ']') {
-            return true;
+            return only_punctuation(line.substr(at + 1));
         }
         const std::size_t close = line[at] == '{' ? line.find('}', at) : std::string_view::npos;
         if (close == std::string_view::npos) {
@@ -341,19 +368,35 @@ bool load(std::vector<edit::SavedLoadout>& loadouts) noexcept {
     if (!core::path::read_artifact_text(kFileName, text)) {
         return !holds_content();
     }
-    const std::string_view document(text.data());
+    // The buffer starts zeroed, so anything but zeros after the first one is a NUL inside the file,
+    // which would end the text there and leave the rest of the file out of every later save.
+    const auto stop = std::find(text.begin(), text.end(), '\0');
+    if (std::any_of(stop, text.end(), [](char c) { return c != '\0'; })) {
+        return false;
+    }
+    std::string_view document(text.data(), static_cast<std::size_t>(stop - text.begin()));
+    if (document.starts_with(kByteOrderMark)) {
+        document.remove_prefix(kByteOrderMark.size());
+    }
+    // Every line is read, so the sheet still offers whatever reads, but a line that is neither one
+    // whole loadout nor the list around them leaves the file unwritable: saving writes the list
+    // whole, so the next save would drop that line for good.
+    bool whole = true;
     for (std::size_t begin = 0; begin < document.size();) {
         std::size_t end = document.find('\n', begin);
         if (end == std::string_view::npos) {
             end = document.size();
         }
+        const std::string_view line = document.substr(begin, end - begin);
         edit::SavedLoadout loadout;
-        if (read_loadout(document.substr(begin, end - begin), loadout)) {
+        if (read_loadout(line, loadout)) {
             loadouts.push_back(std::move(loadout));
+        } else if (!frames_list(line)) {
+            whole = false;
         }
         begin = end + 1;
     }
-    return true;
+    return whole;
 }
 
 bool save(const std::vector<edit::SavedLoadout>& loadouts) noexcept {

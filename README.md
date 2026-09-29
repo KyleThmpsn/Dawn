@@ -235,39 +235,33 @@ reported backup path with `-Restore` before trying another installation.
 
 ## Loadout studio
 
-Open **Loadout** in the in-game menu to edit your character and equipment. Click an item to edit
-it in the side panel. See [Sundial](#sundial) under Acknowledgements for what Dawn adapts from it.
+Open **Loadout** in the in-game menu to edit your characters and gear. Click an item to edit it in
+the side panel. Parts are adapted from [Sundial](#sundial).
 
 - Edit character identity, progression, equipment, subclasses, and inventories.
-- Choose a subclass and attunement, which sets the super and melee, plus jump, grenade, and class
-  ability.
-- Browse weapons, armor, cosmetics, perks, and materials with artwork and descriptions from your
-  packages.
-- Give, equip, lock, and randomize items; set power and quantities; edit sockets, with wider perk
-  scopes for unconventional combinations.
+- Pick a subclass and attunement, plus jump, grenade, and class ability.
+- Browse weapons, armor, cosmetics, perks, and materials, with artwork from your packages.
+- Give, equip, lock, and randomize items; set power and quantities; edit sockets with wider perk
+  choices.
 - Drag an armor stat bar to set a target. Letting go rolls the closest spread the game ships.
-- Save what a character has equipped as a **loadout**, with its perks, level, and subclass
-  abilities, and equip it again in one click. A piece that has gone is made again from the build,
-  and a piece still held gets its saved perks back. Rename, reorder, and copy loadouts to another
-  character of the same class. They are kept in `Dawn/loadouts.json`.
-- **Optimize Armor** works like Sundial's armor stat adjuster. Set the minimum stats you want, and it
-  refits the stat plugs on every piece you wear to reach them. Where that helps, it adds a
-  Masterwork or a stat mod, or swaps in better armor held by you or your other characters of the
-  same class. It previews each change, and **Adjust Armor** makes them all in one step. Locked
-  armor is never changed.
-- Ctrl+click items in the character inventory to lock, send, pull, set the power of, or remove
-  them together. Search reaches every character and the account, and takes filters such as
-  `is:exotic`, `is:locked`, and `power:>1000`.
-- **Undo** and **Redo** take back account edits and loadout changes, with Ctrl+Z and Ctrl+Y.
+- Save equipped gear as a **loadout**, with perks, level, and abilities, and equip it in one click.
+  Missing pieces are rebuilt, and held pieces get their saved perks back. Loadouts can be renamed,
+  reordered, and copied to a character of the same class, and are kept in `Dawn/loadouts.json`.
+- **Optimize Armor** works like Sundial's stat adjuster: set minimum stats, and **Adjust Armor**
+  refits stat plugs, adds mods or a Masterwork, or swaps in better armor from your characters of
+  that class. Locked armor is left alone.
+- Ctrl+click inventory items to lock, send, pull, set power on, or remove them together. Search
+  covers every character and the account, and takes filters like `is:exotic`, `is:locked`, and
+  `power:>1000`.
+- **Undo** and **Redo** with Ctrl+Z and Ctrl+Y.
 
-Edits apply to the running game, with no restart. **Apply Live** is on by default. Turn it off to
-build a draft and commit it with **Apply**, or discard it with **Reload**. The editor checks
-inventory limits, one Exotic per gear category, and whether the game changed the account under
-you. The first apply of a session backs up your player database to `Dawn/editor-backups`.
+Edits apply to the running game. **Apply Live** is on by default; turn it off to build a draft,
+then **Apply** or **Reload** it. The editor checks inventory limits, one Exotic per gear category,
+and whether the game changed the account meanwhile. The first apply of a session backs up your
+player database to `Dawn/editor-backups`.
 
-Most edits show up in game within a moment. Character identity is committed straight away, but
-the Guardian you are playing may keep its look until you sign in again. Changing class needs
-matching armor and a subclass before it applies.
+Most edits show in game within a moment. The Guardian you're playing may keep its look until you
+sign in again, and changing class needs matching armor and a subclass.
 
 ## Missions
 

@@ -19,19 +19,21 @@ namespace inv = state::account::inventory;
 
 /** 190 authored pixels put the second randomizer column clear of the first label. */
 constexpr float kRandomizerColumn = 190.0F;
-/** The power field under the slot list, and the action that rolls. */
+/** The power field under the slot list: its label column and its own width. */
 constexpr float kRandomizerLabelWidth = 110.0F;
 constexpr float kRandomizerFieldWidth = 90.0F;
-constexpr float kRandomizerButtonWidth = 120.0F;
 /** Title of the randomizer, used both for the action and for its modal. */
 constexpr const char* kRandomizeTitle = "Randomize Loadout";
-/** The heading row's actions, as words: no ellipsis, no arrow. */
+/**
+ * The heading row's actions, as words: no ellipsis, no arrow. Randomize is also the action the
+ * randomizer's confirmation ends on, so the word that opened it is the word that rolls.
+ */
 constexpr const char* kRandomizeLabel = "Randomize";
 constexpr const char* kInventoryLabel = "Inventory";
 constexpr const char* kLoadoutsLabel = "Loadouts";
 constexpr const char* kOptimizeLabel = "Optimize Armor";
 
-/** Draws the randomizer modal and runs one roll when it is confirmed. */
+/** Draws the randomizer modal and runs one roll when it is confirmed, by button or by Enter. */
 void draw_randomizer_modal() noexcept {
     if (!ImGui::BeginPopupModal(kRandomizeTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
@@ -40,7 +42,7 @@ void draw_randomizer_modal() noexcept {
     for (std::size_t slot = 0; slot < state.randomizer.slots.size(); ++slot) {
         bool enabled = state.randomizer.slots[slot];
         ImGui::PushID(static_cast<int>(slot));
-        if (ImGui::Checkbox(edit::kSlots[slot], &enabled)) {
+        if (controls::checkbox(edit::kSlots[slot], &enabled)) {
             state.randomizer.slots[slot] = enabled;
         }
         ImGui::PopID();
@@ -55,7 +57,8 @@ void draw_randomizer_modal() noexcept {
     ImGui::DragInt("##random_power", &state.grant.power, 10.0F, 0, kPowerSliderMaximum, "%d",
                    ImGuiSliderFlags_AlwaysClamp);
     controls::space(controls::kSectionSpacing);
-    if (controls::primary_button("Roll Loadout", {pixels(kRandomizerButtonWidth), 0.0F})) {
+    const controls::Answer answer = controls::confirm_footer(kRandomizeLabel);
+    if (answer == controls::Answer::confirm) {
         record_edit(edit::randomize(*state.draft,
                                     state.catalog,
                                     state.character,
@@ -63,10 +66,8 @@ void draw_randomizer_modal() noexcept {
                                     level_of(state.grant.power),
                                     state.randomizer.engine,
                                     state.status));
-        ImGui::CloseCurrentPopup();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (answer != controls::Answer::none) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -93,7 +94,8 @@ void draw_heading_row() noexcept {
     // lies over the page, and set at the edge they sat under it whenever an item was open.
     const float right =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - overlay_width();
-    ImGui::AlignTextToFramePadding();
+    // The heading sets its capitals at the top of the line, where a small button sets its words, so
+    // the row is not aligned to frame padding: that would drop the buttons below the heading.
     controls::heading("Equipped Loadout");
     ImGui::SameLine(right - actions);
     if (ImGui::SmallButton(kLoadoutsLabel)) {

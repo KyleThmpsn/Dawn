@@ -9,6 +9,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -84,9 +85,12 @@ inline constexpr float kSideWorkspaceMinWidth = 340.0F;
 inline constexpr float kSideWorkspaceMaxWidth = 600.0F;
 /** The page keeps at least this much width uncovered: two minimum-width cards and their gap. */
 inline constexpr float kPrimaryWorkspaceMinWidth = 590.0F;
-/** Workspace frame margin, symmetric(12, 8) in Sundial. */
-inline constexpr float kWorkspaceMarginX = 12.0F;
-inline constexpr float kWorkspaceMarginY = 8.0F;
+/**
+ * Workspace frame margin. Sundial keeps symmetric(12, 8); the pane keeps less, because the item
+ * frame inside it carries the tooltip's own padding.
+ */
+inline constexpr float kWorkspaceMarginX = 6.0F;
+inline constexpr float kWorkspaceMarginY = 6.0F;
 /** Bottom workspace height: preferred 48% of the space, clamped, then capped at 70%. */
 inline constexpr float kBottomWorkspacePreferredFraction = 0.48F;
 inline constexpr float kBottomWorkspaceMaximumFraction = 0.70F;
@@ -193,14 +197,25 @@ struct Browse {
     bool includeInternal{};
     /** Equipment slot the results are narrowed to, or -1 for every slot. A swap sets its own. */
     int slot{-1};
+    /** Damage type weapons are narrowed to, as an `edit::Element` value, or -1 for every one. */
+    int element{-1};
+    /** `armorClass` value that follows the class of the character in play, which is where it starts. */
+    static constexpr int kOwnClass = -2;
+    /**
+     * Class armor is narrowed to, as a `state::CharacterClass` value, or -1 for every class. It stands
+     * in for `classOnly` on the armor tab, where one class or another is the question.
+     */
+    int armorClass{kOwnClass};
     /** Empty shows every item type. */
     std::string type;
     char search[kSearchCapacity]{};
 
     /** @return Number of filters narrowing the results beyond the defaults. */
     [[nodiscard]] int narrowing() const noexcept {
-        return (rarity != 0 ? 1 : 0) + (classOnly ? 0 : 1) + (includeInternal ? 1 : 0)
-               + (slot >= 0 ? 1 : 0);
+        const bool armor = category == Category::armor;
+        return (rarity != 0 ? 1 : 0) + (classOnly || armor ? 0 : 1) + (includeInternal ? 1 : 0)
+               + (slot >= 0 ? 1 : 0) + (element >= 0 && category == Category::weapons ? 1 : 0)
+               + (armorClass != kOwnClass && armor ? 1 : 0);
     }
 };
 
@@ -256,8 +271,9 @@ inline constexpr std::size_t kLoadoutNameCapacity = 64;
 struct Loadouts {
     bool loaded{};
     /**
-     * False when a loadouts file is there but could not be read. Nothing is written over it then,
-     * because saving would replace every loadout it holds with only the ones read this session.
+     * False when a loadouts file is there but not every line of it could be read. Nothing is written
+     * over it then, because saving would replace every loadout it holds with only the ones read; the
+     * sheet reads it again each time it opens, so a file fixed by hand is taken up then.
      */
     bool writable{true};
     std::vector<edit::SavedLoadout> entries;
@@ -337,7 +353,10 @@ struct Optimizer {
     edit::ArmorPlan plan;
     std::shared_ptr<const edit::ArmorInput> planInput;
     edit::Stats planTargets{};
-    /** The plan being worked out, if any. */
+    /**
+     * The plan being worked out, if any. A job whose plan came back unfinished stays here, so it is
+     * not started again every frame, and the sheet says no plan meets the minimums.
+     */
     std::shared_ptr<Job> job;
     /** The minimums last seen, and when they last changed, so a plan waits for them to settle. */
     edit::Stats seenTargets{};
@@ -418,14 +437,13 @@ struct Model {
     std::vector<edit::IconOwner> sweptOwners;
     /** Icon browser: the first row on the page, and the edge it draws each tile at. */
     int iconRow{};
-    /** 52 is the tooltip band's icon edge, so a browsed icon is seen at the size it will be used. */
     float iconTile{52.0F};
     /** Package the browser is filtered to, as an index into the catalog's, or -1 for all. */
     int iconPackage{-1};
     /** Icons passing the filter, and the filter the list was built for. */
     std::vector<std::uint32_t> iconFiltered;
     int iconFilterBuilt{-2};
-    /** Icon the viewer is showing, as an index into the catalog's icons, or -1 for none. */
+    /** Icon the viewer is showing, as an index into `iconFiltered`, or -1 for none. */
     int iconViewed{-1};
     /** Raised by a tile and consumed by the page, which is the scope that owns the viewer. */
     bool iconViewRequested{};
@@ -437,6 +455,10 @@ struct Model {
     bool iconNoteFailed{};
     /** Tag of the export the worker is still writing, or zero. */
     std::uint32_t iconExporting{};
+    /** Tag waiting on the game window to put it on the clipboard, or zero. */
+    std::uint32_t iconCopying{};
+    /** The one layer of the viewed icon shown alone, counted as the preview draws them, or -1 for all. */
+    int iconLayer{-1};
 
     /** Inventory page filter: a slot index, or -1 for every slot. */
     int inventorySlot{-1};
@@ -640,6 +662,20 @@ void retrace_edit(bool forward) noexcept;
 void record_history() noexcept;
 
 /**
+ * Queues text for the Windows clipboard. Dawn gives Dear ImGui no clipboard of its own, so the game
+ * window writes it once the frame's locks are released, and the outcome comes a frame later.
+ * @return False when the text is too long, or another copy is still waiting.
+ */
+[[nodiscard]] bool request_copy(std::string_view text) noexcept;
+
+/**
+ * Takes the outcome of the last queued copy once the game window has written it.
+ * @param copied Receives whether the clipboard took the text.
+ * @return True once for each queued copy; false while it waits.
+ */
+[[nodiscard]] bool take_copy_result(bool& copied) noexcept;
+
+/**
  * Records a change to the saved loadouts, already written, as a step of its own.
  * @param before The saved loadouts as they stood before the change.
  */
@@ -657,6 +693,55 @@ void note_loadouts_change(std::vector<edit::SavedLoadout> before) noexcept;
 
 /** Picks one item on the character inventory page, or lets it go again. */
 void toggle_pick(std::uint64_t instance) noexcept;
+
+/**
+ * A search as typed, split into the words matched against an item's name, type and description, and
+ * the filters it must also pass. A filter the page does not know is kept as a word, so it matches the
+ * way anything else typed would, rather than being dropped without a word. The inventory pages and
+ * the armory read their searches through this one reader, so a filter means the same on each.
+ */
+struct Query {
+    std::string words;
+    /** Rarity tier asked for, or -1. */
+    int tier{-1};
+    /** Weapon or armor asked for, when `kinded`. */
+    edit::GearKind kind{edit::GearKind::other};
+    bool kinded{};
+    /** Element asked for, when `elemented`. */
+    edit::Element element{edit::Element::none};
+    bool elemented{};
+    /** Each of these is -1 when not asked for, else 1 for yes and 0 for no. */
+    int locked{-1};
+    int equipped{-1};
+    int postmaster{-1};
+    /** Power comparison: 0 for none, else one of < > = and l for at most, g for at least. */
+    char comparison{};
+    int power{};
+
+    /** @return True when a filter names something only an item a character holds can have. */
+    [[nodiscard]] bool held_only() const noexcept {
+        return locked >= 0 || equipped >= 0 || postmaster >= 0 || comparison != 0;
+    }
+};
+
+/** Said under the pointer over every search field `read_query` reads: what it takes besides a name. */
+inline constexpr const char* kSearchTip =
+    "Name, type or description. Filters: is:exotic, is:legendary, is:weapon, is:armor, is:arc, "
+    "is:solar, is:void, is:locked, is:unlocked, is:equipped, is:postmaster, power:>1000.";
+
+/** @return A search read into its words and its filters. The search is already folded to lower case. */
+[[nodiscard]] Query read_query(const std::string& search) noexcept;
+
+/**
+ * @return True when one item passes a search: its words and every filter.
+ * @param item The item a character holds, or null for a catalog entry or a profile stack, which a
+ * filter only a held item can pass leaves out.
+ * @param equipped True when the character has the item on.
+ */
+[[nodiscard]] bool passes(const Query& query,
+                          const edit::CatalogItem& definition,
+                          const edit::Item* item,
+                          bool equipped) noexcept;
 
 /**
  * Draws every socket of one owned item as an editable row: the fitted plug's icon, its name, its

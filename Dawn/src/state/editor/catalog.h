@@ -132,10 +132,11 @@ struct Catalog {
     /** Item definitions outside `items` that name an icon. Empty until `sweep_icons` fills it. */
     std::vector<IconOwner> iconOwners;
     /**
-     * The icon containers the icon browser walks, filtered by the package that declares each.
+     * The icons the icon browser walks, filtered by the package that declares each.
      * At load this holds only the investment icons; `sweep_icons` replaces it with every icon
-     * container the installed packages declare, which is the only way to find an icon no record
-     * points at. The sweep reads every package's entry table, so it runs only when asked for.
+     * container the installed packages declare, and every bare image the interface packages keep,
+     * which is the only way to find an icon no record points at. The sweep reads every package's
+     * entry table, so it runs only when asked for.
      */
     std::vector<IconRow> icons;
     /** Package families that declare an icon, in the order `IconRow::package` indexes them. */
@@ -144,6 +145,11 @@ struct Catalog {
     bool iconsSwept{};
     /** Entry class of an icon container, which the sweep searches the packages for. */
     std::uint32_t iconClass{};
+    /**
+     * Entry class of an image record: one layer of an icon container, and the form the interface
+     * packages keep their art in, bare, with no container around it.
+     */
+    std::uint32_t imageClass{};
     /** Investment icon table row by tag, so a swept icon can still name the row that indexes it. */
     std::unordered_map<std::uint32_t, std::uint32_t> investmentIconRows;
     /** The game's own ammunition marks, indexed by `Ammo`. Index zero is never drawn. */

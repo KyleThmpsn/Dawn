@@ -108,41 +108,59 @@ struct LoadoutResult {
     std::size_t saved{};
     /** Pieces now equipped, whether they were put on or were already in place. */
     std::size_t equipped{};
-    /** Pieces that had gone and were made again from the build. */
+    /** Pieces the account no longer held in any copy, made again from the build. */
     std::size_t recreated{};
-    /** Pieces still held whose saved plugs were fitted back in. */
+    /** Pieces stowed on another character, brought over to this one. */
+    std::size_t brought{};
+    /** Pieces held whose saved level or plugs were put back. */
     std::size_t refitted{};
     /** Pieces skipped: gone from the build, not this class's, at the postmaster, or without room. */
     std::size_t unavailable{};
-    /** New instance per slot of each piece made again, or zero, so the loadout can name it next time. */
+    /**
+     * The copy each slot's piece turned out to be where that is not the copy saved, one made again or
+     * one that took its place, or zero, so the loadout can name it next time.
+     */
     std::array<std::uint64_t, account::inventory::kEquipmentSlotCount> replaced{};
 };
 /** Where one saved piece stands on a character now. */
 enum class PieceState : std::uint8_t {
     /** The slot was empty when the loadout was saved. */
     empty,
-    /** On now, as the item that was saved. */
+    /** On now, as the copy saved or another copy of the same item. */
     equipped,
-    /** Held and stowed as the item that was saved, so equipping the loadout puts it on. */
+    /** Held and stowed, so equipping the loadout puts it on. */
     stowed,
     /**
-     * The copy saved is gone, or its id now names another item, but the build still carries the
-     * item and this class can hold it, so equipping the loadout makes it again.
+     * The account holds no copy of the item any longer, but the build still carries it and this
+     * class can hold it, so equipping the loadout makes it again.
      */
     missing,
     /** Gone from the build, not this class's, or waiting at the postmaster. */
     unavailable,
 };
+/** Where one saved piece stands, and the copy of it equipping the loadout would put on. */
+struct PieceMatch {
+    PieceState state{PieceState::empty};
+    /** The copy that would go on, or zero while none is held. */
+    std::uint64_t instance{};
+    /** The character holding that copy, which is another one only for a copy that is brought over. */
+    std::size_t holder{};
+};
 /**
- * @return Where one saved piece stands on one character now. Equipping a loadout and the sheet
- * that previews it both read a piece through this, so the preview never promises a piece the
- * equip would skip.
+ * @return Where one saved piece stands for one character now. The copy saved is looked for first;
+ * when it has gone, another copy of the same item on the character takes its place, the one in the
+ * piece's slot before any stowed, and has the saved level and plugs put back over its own; then the copy saved,
+ * stowed on another character, which is brought over. Only an item the account no longer holds is
+ * made again. Equipping a loadout and the sheet that previews it both read a piece through this, so
+ * the preview never promises a piece the equip would skip.
+ * @param slot The equipment slot the piece fills.
  */
-PieceState piece_state(const CharacterState& character, const Catalog& catalog, const SavedPiece& piece) noexcept;
+PieceMatch match_piece(const AccountState& account, std::size_t characterIndex, const Catalog& catalog, const SavedPiece& piece, std::size_t slot) noexcept;
 /**
- * @return How many socket lanes of one held item equipping its saved piece would change: each lane
- * whose saved plug the build still carries and the item does not hold now. A lane saved empty, or
- * whose plug has left the build, keeps what it has, and is not counted.
+ * @return How much of one held item equipping its saved piece would put back: its level, when the
+ * piece was saved with one and the item is at another now, and each lane whose saved plug the build
+ * still carries and the item does not hold now. A lane saved empty, or whose plug has left the build,
+ * keeps what it has, and is not counted.
  */
 std::size_t refit_count(const Item& item, const Catalog& catalog, const SavedPiece& piece) noexcept;
 /**
@@ -153,12 +171,13 @@ bool abilities_differ(const CharacterState& character, const Catalog& catalog, c
 /** @return What one character has equipped now, with each piece's level and plugs, as a loadout. */
 SavedLoadout capture_loadout(const CharacterState& character, const Catalog& catalog, std::string name);
 /**
- * Equips a saved loadout on one character. A piece still held has its saved plugs fitted back in; a
- * piece whose copy has gone is made again from the build, at its saved level with its saved plugs;
- * one the build no longer carries is skipped rather than refusing the rest. The subclass's abilities
- * are put back only when the saved subclass is the one equipped, and only entries it offers, so the
- * result is always one the game accepts.
- * @param fallbackLevel Level a piece is made at when neither its save nor its slot gives one.
+ * Equips a saved loadout on one character. Each piece is found as `match_piece` finds it: a copy held
+ * has its saved level and plugs put back over its own, and only a piece the account no longer holds
+ * is made again from the build, at its saved level with its saved plugs; one the build no longer
+ * carries is skipped rather than refusing the rest. The subclass's abilities are put back only when
+ * the saved subclass is the one equipped, and only entries it offers, so the result is always one
+ * the game accepts.
+ * @param fallbackLevel Level a piece of gear is made at when it was saved before levels were kept.
  * @return True when anything changed. `error` says why nothing did otherwise.
  */
 bool apply_loadout(Draft& draft, const Catalog& catalog, std::size_t character, const SavedLoadout& loadout,

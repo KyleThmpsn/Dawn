@@ -15,13 +15,11 @@ using scaling::dpi::pixels;
 
 /**
  * Field groups sit side by side, as Sundial's character page lays them out.
- * Its widths, label columns and gaps are kept.
+ * Its widths and label columns are kept; the gap between two groups is the page's own group gap.
  */
 /** Sundial: identity, subclass and abilities, at these widths with these label columns. */
 constexpr float kGroupWidths[]{196.0F, 268.0F, 300.0F};
 constexpr float kGroupLabelWidths[]{58.0F, 66.0F, 88.0F};
-/** Gap between two field groups sharing a row. The gap inside a field is controls' own. */
-constexpr float kGroupColumnGap = 18.0F;
 /** A field control is one line of text plus this, which is as short as a combo reads. */
 constexpr float kFieldFramePaddingY = 1.0F;
 /** Vertical gap between two stacked fields in a group. */
@@ -53,6 +51,8 @@ constexpr const char* kClassNote =
 /**
  * Draws one enum picker as a labelled field.
  * @param publish False when the change needs follow-up edits before it can be applied.
+ * @param note What the field needs before its change can apply, shown under the pointer and, once
+ *        a change is held back, on the action bar.
  */
 template <typename Enum>
 void enum_field(const char* label,
@@ -68,6 +68,11 @@ void enum_field(const char* label,
     if (controls::picker("##field", index, items, controlWidth)) {
         value = static_cast<Enum>(index);
         mark_changed(publish);
+        // A change held back from the game otherwise looks applied, so the bar says why it waits.
+        if (!publish && note != nullptr) {
+            model().status = note;
+            model().statusFailed = false;
+        }
     }
     if (note != nullptr && ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", note);
@@ -188,7 +193,7 @@ void draw_character_fields() noexcept {
     // The groups wrap inside the width the side workspace leaves uncovered. The workspace lies over
     // the page rather than beside it, so measured to the page edge the last group sat under it.
     const float available = (std::max)(0.0F, ImGui::GetContentRegionAvail().x - overlay_width());
-    const float gap = pixels(kGroupColumnGap);
+    const float gap = pixels(controls::kGroupGap);
     // The field rows run shorter than the rest of the page; a combo here is a label, not a target.
     // The fields stack with only a sliver between them, so a group reads as one block.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,

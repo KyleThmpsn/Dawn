@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <imgui.h>
 #include <map>
@@ -22,25 +23,17 @@ namespace inv = state::account::inventory;
 
 /** Width of the search box each inventory page puts at the head of its filter row. */
 constexpr float kSearchWidth = 220.0F;
-/** 150 authored pixels fit the widest slot name in the slot picker. */
-constexpr float kSlotPickerWidth = 150.0F;
-/** Icon edge on an account stack row. */
+/**
+ * A row of the page's two lists, the profile's stacks and the search's other results alike: the
+ * icon's edge, the inset at either end, and the room the row keeps over and under its content.
+ */
 constexpr float kProfileIconExtent = 28.0F;
 constexpr float kProfileRowInset = 6.0F;
-/** Vertical breathing room the row fill adds above and below its content. */
 constexpr float kProfileRowPadding = 2.0F;
-/** Narrowest an account stack row is drawn, which sets the column count. */
+/** Narrowest a list row is drawn, which sets the column count. */
 constexpr float kProfileRowMinimumWidth = 320.0F;
-/**
- * Gap between two lines of account stacks.
- * The card grid's own column gap is narrower than the fill each row paints around its content, so
- * lines set at it ran their fills together into one block.
- */
-constexpr float kProfileRowGap = 9.0F;
 /** 64 authored pixels hold a five-figure stack without the field reading as an empty box. */
 constexpr float kQuantityWidth = 64.0F;
-/** Rule under each account stack row, as the tooltip rules its own rows. */
-constexpr ImVec4 kProfileRowRule{1.0F, 1.0F, 1.0F, 0.08F};
 /** The add action on each page's header row. */
 constexpr const char* kAddItemLabel = "Add Item";
 /** The removal says what it does. A glyph on its own read as decoration rather than a control. */
@@ -50,90 +43,104 @@ constexpr const char* kUntypedGroup = "Other";
 constexpr const char* kUnknownGroup = "Unknown";
 /** Largest stack the editor offers when the catalog does not name a limit. */
 constexpr int kUnknownStackLimit = 9999;
-/** Title of the account stack removal, used for both the action and its modal. */
-constexpr const char* kRemoveStackTitle = "Remove Account Stack?";
+/** Title of the stack removal, used for both the action and its modal. */
+constexpr const char* kRemoveStackTitle = "Remove Stack?";
+/** Id of a stack row's own menu, which offers the removal the row's Remove does. */
+constexpr const char* kStackMenuId = "stack_menu";
+/** What every removal on the page says under what goes: it is an edit like any other. */
+constexpr const char* kUndoOneNote = "Undo brings it back.";
+constexpr const char* kUndoManyNote = "Undo brings them back.";
+/** What a list says when a search or a filter leaves nothing in it. */
+constexpr const char* kNoMatchLabel = "No items match.";
 /**
- * The bar that stands over the grid while items are selected: a strip in the choice fill with the
+ * The bar that stands over the grid while anything is selected: a strip in the choice fill with the
  * accent's rail, holding the count and what can be done to all of them at once.
  */
 constexpr float kPickBarPadding = 4.0F;
 constexpr float kPickBarInset = 10.0F;
 /**
- * Id of the removal of every selected item, whose title counts what it removes, and the words the
- * bar's send row leads with. Everything after ### names the popup, so the count can change in front.
+ * Id of the removal of every selected item, whose title says whether it removes one item or
+ * several. Everything after ### names the popup, so the title can change in front of it.
  */
 constexpr const char* kRemovePickedId = "###remove_selected";
+/** The bar's actions, which are measured before they are drawn. */
+constexpr const char* kLockLabel = "Lock";
+constexpr const char* kUnlockLabel = "Unlock";
 constexpr const char* kSendLabel = "Send To";
+constexpr const char* kSetPowerLabel = "Set Power";
+constexpr const char* kPullLabel = "Pull";
+constexpr const char* kSelectAllLabel = "Select All Shown";
+constexpr const char* kClearLabel = "Clear Selection";
+/** Why an action on the selection is disabled, which it says under the pointer. */
+constexpr const char* kPowerlessTip = "No selected item carries Power.";
+constexpr const char* kNotWaitingTip = "No selected item is at the Postmaster.";
+constexpr const char* kKeptTip = "Locked and equipped items can't be removed.";
+/**
+ * The count keeps a slot as wide as three figures, more than a character carries, so the actions
+ * after it hold still as the count grows.
+ */
+constexpr const char* kPickCountSample = "000 Selected";
 /** 64 authored pixels hold a five-figure Power in the selection bar's field. */
 constexpr float kPickPowerWidth = 64.0F;
-/** Names the removal lists before it counts the rest. */
-constexpr std::size_t kRemovalNamesShown = 6;
-constexpr float kRemovalButtonWidth = 120.0F;
 /** 192 bytes hold any outcome the bar reports, with every count it can give. */
 constexpr std::size_t kMessageCapacity = 192;
-/** The search's other results: the section's title, and the account's name for its own stacks. */
+/** The search's other results: the section's title, and the name its profile stacks go under. */
 constexpr const char* kElsewhereLabel = "Elsewhere on the Account";
-constexpr const char* kAccountLabel = "Account";
+constexpr const char* kProfileLabel = "Profile";
 /** Where a result elsewhere is kept, after the name of whoever keeps it. */
 constexpr const char* kEquippedWhere = "Equipped";
 constexpr const char* kPostmasterWhere = "Postmaster";
 /** A result that belongs to the account rather than a character. */
 constexpr std::size_t kAccountItems = static_cast<std::size_t>(-1);
 
+/** @return The width a button takes for its label, as Dear ImGui sizes one: the words and the frame padding. */
+[[nodiscard]] float button_width(const char* label) noexcept {
+    return ImGui::CalcTextSize(label, nullptr, true).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
+}
+
 /**
- * Draws the page's add action at the far end of its header row, which opens the armory on the
- * category the page is made of. The armory is where an item is granted from; the page only has
- * to say where to go.
- * @param category Armory category the page opens on.
+ * Draws the page's add action at the far end of its header row, which opens the armory on what the
+ * page is made of. The armory is where an item is granted from; the page only has to say where to go.
+ * A page narrowed to one slot opens the armory on that slot's category, narrowed the same way, as a
+ * card's swap does. Any other page opens it on the page's own category across every slot, so the
+ * armory never keeps a slot its category has no items for.
+ * @param category Armory category the page opens on when it is not narrowed to a slot.
+ * @param slot Equipment slot the page is narrowed to, or -1.
  */
-void draw_add_action(Category category) noexcept {
+void draw_add_action(Category category, int slot) noexcept {
     Model& state = model();
-    const float width =
-        ImGui::CalcTextSize(kAddItemLabel).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
-    ImGui::SameLine(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - width);
-    if (!ImGui::SmallButton(kAddItemLabel)) {
+    // The side workspace lies over the page's right edge, so the action keeps to what it leaves.
+    ImGui::SameLine(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - overlay_width()
+                    - button_width(kAddItemLabel));
+    if (!ImGui::Button(kAddItemLabel)) {
         return;
     }
     state.view = View::armory;
     state.browse.category = category;
+    state.browse.slot = -1;
+    // The armory carries no subclasses, so a page narrowed to the subclass opens on its own category.
+    if (slot >= 0 && static_cast<std::size_t>(slot) != kSubclassSlot) {
+        const auto index = static_cast<std::size_t>(slot);
+        state.browse.category = index <= kLastWeaponSlot  ? Category::weapons
+                                : index <= kLastArmorSlot ? Category::armor
+                                                          : Category::cosmetics;
+        state.browse.slot = slot;
+    }
     state.browse.type.clear();
     state.results.key.clear();
 }
 
-/**
- * A search as typed, split into the words matched against an item's name, type and description, and
- * the filters it must also pass. A filter the page does not know is kept as a word, so it matches the
- * way anything else typed would, rather than being dropped without a word.
- */
-struct Query {
-    std::string words;
-    /** Rarity tier asked for, or -1. */
-    int tier{-1};
-    /** Weapon or armor asked for, when `kinded`. */
-    edit::GearKind kind{edit::GearKind::other};
-    bool kinded{};
-    /** Element asked for, when `elemented`. */
-    edit::Element element{edit::Element::none};
-    bool elemented{};
-    /** Each of these is -1 when not asked for, else 1 for yes and 0 for no. */
-    int locked{-1};
-    int equipped{-1};
-    int postmaster{-1};
-    /** Power comparison: 0 for none, else one of < > = and l for at most, g for at least. */
-    char comparison{};
-    int power{};
-
-    /** @return True when a filter names something only an item a character holds can have. */
-    [[nodiscard]] bool held_only() const noexcept {
-        return locked >= 0 || equipped >= 0 || postmaster >= 0 || comparison != 0;
-    }
-};
-
 /** Filter words and what each asks for, as a player types them after is: */
 constexpr const char* kTierWords[]{"unclassified", "common", "uncommon", "rare", "legendary", "exotic"};
 
-/** @return A search read into its words and its filters. The search is already folded to lower case. */
-[[nodiscard]] Query read_query(const std::string& search) noexcept {
+/** @return True when the game gives an item a Power, which only gear carries. */
+[[nodiscard]] bool carries_power(const edit::CatalogItem& definition) noexcept {
+    return definition.kind == edit::GearKind::weapon || definition.kind == edit::GearKind::armor;
+}
+
+} // namespace
+
+Query read_query(const std::string& search) noexcept {
     Query query;
     const auto keep = [&query](const std::string& word) {
         query.words += query.words.empty() ? word : " " + word;
@@ -206,18 +213,7 @@ constexpr const char* kTierWords[]{"unclassified", "common", "uncommon", "rare",
     return query;
 }
 
-/** @return True when the game gives an item a Power, which only gear carries. */
-[[nodiscard]] bool carries_power(const edit::CatalogItem& definition) noexcept {
-    return definition.kind == edit::GearKind::weapon || definition.kind == edit::GearKind::armor;
-}
-
-/**
- * @return True when one item passes a search: its words and every filter.
- * @param item The item a character holds, or null for an account stack, which a filter only a held
- * item can pass leaves out.
- * @param equipped True when the character has the item on.
- */
-[[nodiscard]] bool passes(const Query& query, const edit::CatalogItem& definition, const edit::Item* item, bool equipped) noexcept {
+bool passes(const Query& query, const edit::CatalogItem& definition, const edit::Item* item, bool equipped) noexcept {
     if ((!query.words.empty() && !edit::matches(definition, query.words))
         || (query.tier >= 0 && definition.definition.tier != query.tier)
         || (query.kinded && definition.kind != query.kind)
@@ -253,10 +249,7 @@ constexpr const char* kTierWords[]{"unclassified", "common", "uncommon", "rare",
     }
 }
 
-/** Said under the pointer over a search field: what it takes besides a name. */
-constexpr const char* kSearchTip =
-    "Name, type or description. Filters: is:exotic, is:legendary, is:weapon, is:armor, is:arc, "
-    "is:solar, is:void, is:locked, is:unlocked, is:equipped, is:postmaster, power:>1000.";
+namespace {
 
 /** @return True when one owned item passes the page's search and slot filters. */
 [[nodiscard]] bool passes_filters(const edit::Item& item, const Query& query, bool equipped) noexcept {
@@ -321,6 +314,15 @@ constexpr const char* kSearchTip =
         count += slot ? 1 : 0;
     }
     return count;
+}
+
+/**
+ * @return True when a removal would take the item: the character holds it, and it is neither locked,
+ * as the game keeps a locked item, nor equipped, which stays until something replaces it.
+ */
+[[nodiscard]] bool can_remove(std::uint64_t instance) noexcept {
+    const edit::Item* item = find_owned_item(instance);
+    return item != nullptr && !is_equipped(instance) && (item->flags & inv::kLockedItemFlag) == 0;
 }
 
 /** Lets go of every selected item the character no longer holds, such as one just sent away. */
@@ -577,7 +579,27 @@ void run_bulk(const Bulk& bulk) noexcept {
 }
 
 /**
- * Draws the confirmation the bar's Remove opens, which names what it would remove.
+ * Draws the body every removal on the page is laid out in, inside its open modal: what goes, one muted
+ * line that ends on what Undo does, and the confirmation's two buttons. A removal is an edit like any
+ * other, so it can be taken back; saying so is what makes it safe. Either answer closes the modal.
+ * @param what The item's name, or how many items go.
+ * @param note The muted line.
+ * @return True when the removal was confirmed.
+ */
+[[nodiscard]] bool confirm_removal(const char* what, const char* note) noexcept {
+    ImGui::TextUnformatted(what);
+    ImGui::TextColored(tooltip::muted(), "%s", note);
+    controls::space(controls::kRowSpacing);
+    const controls::Answer answer = controls::confirm_footer(kRemoveLabel);
+    if (answer != controls::Answer::none) {
+        ImGui::CloseCurrentPopup();
+    }
+    return answer == controls::Answer::confirm;
+}
+
+/**
+ * Draws the confirmation the bar's Remove opens, as every removal on the page reads: the item's name,
+ * or how many go when several do, then what stays and that Undo brings them back.
  * @return True when the removal was confirmed.
  */
 [[nodiscard]] bool draw_remove_picked_modal() noexcept {
@@ -585,105 +607,109 @@ void run_bulk(const Bulk& bulk) noexcept {
     if (!ImGui::IsPopupOpen(kRemovePickedId)) {
         return false;
     }
-    std::vector<std::string> names;
+    const edit::CatalogItem* definition = nullptr;
+    std::size_t going = 0;
     std::size_t kept = 0;
     for (const std::uint64_t instance : state.picked) {
         const edit::Item* item = find_owned_item(instance);
-        const edit::CatalogItem* definition = item != nullptr ? state.catalog.find(item->definitionHash) : nullptr;
         if (item == nullptr) {
             continue;
         }
-        if (is_equipped(instance) || (item->flags & inv::kLockedItemFlag) != 0) {
+        if (!can_remove(instance)) {
             ++kept;
             continue;
         }
-        names.push_back(definition != nullptr ? definition->name : std::string("Unknown Item"));
+        definition = state.catalog.find(item->definitionHash);
+        ++going;
     }
-    // The title says how many it removes; the id after it keeps the popup the same one whatever the count.
+    // One item reads as the pane's own removal does; several are counted. The id after ### keeps the
+    // popup the same one whichever title it shows.
+    const bool one = going == 1;
     char title[kMessageCapacity]{};
-    (void)std::snprintf(title,
-                        sizeof title,
-                        "Remove %zu %s?%s",
-                        names.size(),
-                        names.size() == 1 ? "Item" : "Items",
-                        kRemovePickedId);
+    (void)std::snprintf(title, sizeof title, "%s%s", one ? "Remove Item?" : "Remove Items?", kRemovePickedId);
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         return false;
     }
-    ImGui::Text("Removes these from %s's inventory:", character_label(state.character).c_str());
-    controls::space(controls::kRowSpacing);
-    for (std::size_t i = 0; i < names.size() && i < kRemovalNamesShown; ++i) {
-        ImGui::BulletText("%s", names[i].c_str());
-    }
-    if (names.size() > kRemovalNamesShown) {
-        ImGui::TextDisabled("and %zu more", names.size() - kRemovalNamesShown);
-    }
-    if (names.empty()) {
-        ImGui::TextDisabled("Locked and equipped items can't be removed.");
-    }
-    if (kept != 0 && !names.empty()) {
-        ImGui::TextDisabled("%zu locked or equipped %s will stay.", kept, kept == 1 ? "item" : "items");
-    }
-    // A removal is an edit like any other, so it can be taken back; saying so is what makes it safe.
-    if (!names.empty()) {
-        ImGui::TextDisabled("Undo brings them back.");
-    }
-    controls::space(controls::kSectionSpacing);
-    char label[kMessageCapacity]{};
-    (void)std::snprintf(label, sizeof label, "Remove %zu", names.size());
-    bool confirmed = false;
-    ImGui::BeginDisabled(names.empty());
-    if (controls::primary_button(label, {pixels(kRemovalButtonWidth), 0.0F})) {
-        confirmed = true;
+    if (going == 0) {
+        // What was selected went while the question was open, to an undo or the account reloading.
         ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return false;
     }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Cancel", {pixels(kRemovalButtonWidth), 0.0F}) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        ImGui::CloseCurrentPopup();
+    char count[kMessageCapacity]{};
+    (void)std::snprintf(count, sizeof count, "%zu Items", going);
+    const char* what = !one ? count : definition != nullptr ? definition->name.c_str() : "Unknown Item";
+    const char* back = one ? kUndoOneNote : kUndoManyNote;
+    char note[kMessageCapacity]{};
+    if (kept == 0) {
+        (void)std::snprintf(note, sizeof note, "%s", back);
+    } else {
+        (void)std::snprintf(note,
+                            sizeof note,
+                            "%zu locked or equipped %s. %s",
+                            kept,
+                            kept == 1 ? "item stays" : "items stay",
+                            back);
     }
+    const bool confirmed = confirm_removal(what, note);
     ImGui::EndPopup();
     return confirmed;
 }
 
+/** @return The width of the bar's count slot, which is as wide as three figures whatever the count. */
+[[nodiscard]] float pick_count_width() noexcept {
+    return ImGui::CalcTextSize(art::shout(kPickCountSample).c_str()).x;
+}
+
 /**
- * Draws the bar that stands over the grid while items are selected: how many, what can be done to
- * all of them, and at its far end the ways to widen the selection or let it go.
- * @param shown Items the page's filters show, which Select all takes.
- * @return The action pressed, which the page carries out once it has drawn its items: sending or
- * removing moves the items the grid is about to read.
+ * @return How far the bar's count and actions run, from its left inset to the far edge of Remove.
+ * Every action keeps its place whatever is selected, disabled when nothing selected takes it, so this
+ * is the same with nothing selected as with anything, and the bar is laid out from it before either.
  */
-[[nodiscard]] Bulk draw_pick_bar(const std::vector<const edit::Item*>& shown) noexcept {
+[[nodiscard]] float pick_actions_width() noexcept {
+    const Model& state = model();
+    const state::AccountState& account = state.draft->after;
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float gap = pixels(controls::kGroupGap);
+    float width = pick_count_width() + gap + button_width(kLockLabel) + spacing + button_width(kUnlockLabel);
+    if (account.characterCount > 1) {
+        width += gap + ImGui::CalcTextSize(kSendLabel).x;
+        for (std::size_t c = 0; c < account.characterCount; ++c) {
+            if (c != state.character) {
+                width += spacing + button_width(character_label(c).c_str());
+            }
+        }
+    }
+    return width + gap + pixels(kPickPowerWidth) + spacing + button_width(kSetPowerLabel) + gap
+           + button_width(kPullLabel) + gap + button_width(kRemoveLabel);
+}
+
+/**
+ * Draws the bar's count and its actions from the cursor, as `pick_actions_width` measures them. An
+ * action nothing selected takes keeps its place, disabled, with the reason under the pointer.
+ * @return The action pressed.
+ */
+[[nodiscard]] Bulk draw_pick_actions() noexcept {
     Bulk bulk;
     Model& state = model();
     const state::AccountState& account = state.draft->after;
-    const ImGuiStyle& style = ImGui::GetStyle();
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float width = (std::max)(0.0F, ImGui::GetContentRegionAvail().x - overlay_width());
-    const float padding = pixels(kPickBarPadding);
-    const float inset = pixels(kPickBarInset);
-    const float right = origin.x + width - inset;
-    // Whether the far end fits beside the actions decides how tall the strip is, so the controls are
-    // laid out first and the strip's fill goes in behind them afterwards.
-    draw->ChannelsSplit(2);
-    draw->ChannelsSetCurrent(1);
-
-    ImGui::SetCursorScreenPos({origin.x + inset, origin.y + padding});
+    const float gap = pixels(controls::kGroupGap);
+    char count[kMessageCapacity]{};
+    (void)std::snprintf(count, sizeof count, "%zu Selected", state.picked.size());
     ImGui::AlignTextToFramePadding();
-    ImGui::Text("%zu Selected", state.picked.size());
-    ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
-    if (ImGui::Button("Lock")) {
+    tooltip::draw_label(count);
+    ImGui::SameLine(0.0F, (std::max)(0.0F, pick_count_width() - ImGui::GetItemRectSize().x) + gap);
+    if (ImGui::Button(kLockLabel)) {
         bulk.kind = Bulk::Kind::lock;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Unlock")) {
+    if (ImGui::Button(kUnlockLabel)) {
         bulk.kind = Bulk::Kind::unlock;
     }
     // Sending reads as the pane's own send row: the words, then a button for each other character.
     // One none of the selection could go to keeps its button, disabled, so the row says why.
     if (account.characterCount > 1) {
-        ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
+        ImGui::SameLine(0.0F, gap);
         ImGui::TextUnformatted(kSendLabel);
         for (std::size_t c = 0; c < account.characterCount; ++c) {
             if (c == state.character) {
@@ -708,7 +734,8 @@ void run_bulk(const Bulk& bulk) noexcept {
             ImGui::PopID();
         }
     }
-    // Power and the pull are offered only when the selection holds something they act on.
+    // Power, the pull and the removal keep their places too, so the row does not reflow as the
+    // selection changes what they can act on.
     const bool powered = std::any_of(state.picked.begin(), state.picked.end(), [&state](std::uint64_t instance) {
         const edit::Item* item = find_owned_item(instance);
         const edit::CatalogItem* definition = item != nullptr ? state.catalog.find(item->definitionHash) : nullptr;
@@ -718,75 +745,132 @@ void run_bulk(const Bulk& bulk) noexcept {
         const edit::Item* item = find_owned_item(instance);
         return item != nullptr && item->postmaster;
     });
-    if (powered) {
-        ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
-        ImGui::SetNextItemWidth(pixels(kPickPowerWidth));
-        (void)ImGui::InputInt("##pick_power", &state.pickPower, 0, 0);
-        // The field has no label of its own beside it; the button after it names what it is for.
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Power to set the selected weapons and armor to.");
-        }
-        const bool entered = ImGui::IsItemDeactivated()
-                             && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
-        state.pickPower = std::clamp(state.pickPower, 0, kPowerSliderMaximum);
-        ImGui::SameLine();
-        if (ImGui::Button("Set Power") || entered) {
-            bulk.kind = Bulk::Kind::power;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Set selected gear to this Power.");
-        }
+    const bool removing = std::any_of(state.picked.begin(), state.picked.end(), can_remove);
+    ImGui::SameLine(0.0F, gap);
+    ImGui::BeginDisabled(!powered);
+    ImGui::SetNextItemWidth(pixels(kPickPowerWidth));
+    (void)ImGui::InputInt("##pick_power", &state.pickPower, 0, 0);
+    // The field has no label of its own beside it; the button after it names what it is for.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", powered ? "Power to set the selected weapons and armor to." : kPowerlessTip);
     }
-    if (waiting) {
-        ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
-        if (ImGui::Button("Pull")) {
-            bulk.kind = Bulk::Kind::pull;
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Pull selected items from the Postmaster.");
-        }
+    const bool entered = ImGui::IsItemDeactivated()
+                         && (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+    state.pickPower = std::clamp(state.pickPower, 0, kPowerSliderMaximum);
+    ImGui::SameLine();
+    if (ImGui::Button(kSetPowerLabel) || entered) {
+        bulk.kind = Bulk::Kind::power;
     }
-    ImGui::SameLine(0.0F, pixels(controls::kGroupGap));
-    if (ImGui::Button("Remove")) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", powered ? "Set selected gear to this Power." : kPowerlessTip);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0F, gap);
+    ImGui::BeginDisabled(!waiting);
+    if (ImGui::Button(kPullLabel)) {
+        bulk.kind = Bulk::Kind::pull;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", waiting ? "Pull selected items from the Postmaster." : kNotWaitingTip);
+    }
+    ImGui::SameLine(0.0F, gap);
+    ImGui::BeginDisabled(!removing);
+    if (ImGui::Button(kRemoveLabel)) {
         ImGui::OpenPopup(kRemovePickedId);
     }
-
-    // Select all and Clear sit at the far end, apart from what acts on the items, or on a line of
-    // their own when the actions leave them no room.
-    const char* selectAll = "Select All Shown";
-    const char* clear = "Clear Selection";
-    const float trailing = ImGui::CalcTextSize(selectAll).x + ImGui::CalcTextSize(clear).x
-                           + (style.FramePadding.x * 4.0F) + style.ItemSpacing.x;
-    ImGui::SameLine();
-    ImVec2 at = ImGui::GetCursorScreenPos();
-    if (at.x + trailing > right) {
-        at = {origin.x + inset, at.y + ImGui::GetFrameHeight() + style.ItemSpacing.y};
-    } else {
-        at.x = right - trailing;
+    ImGui::EndDisabled();
+    if (!removing && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", kKeptTip);
     }
-    ImGui::SetCursorScreenPos(at);
-    if (ImGui::Button(selectAll)) {
-        for (const edit::Item* item : shown) {
-            if (!is_picked(item->instanceSoid)) {
-                state.picked.push_back(item->instanceSoid);
+    return bulk;
+}
+
+/**
+ * Draws the bar that stands over the grid while anything is selected: how many items are, what can
+ * be done to all of them, and at its far end the ways to widen the selection or let it go.
+ * @param shown Items the page's filters show, which Select All Shown takes.
+ * @return The action pressed, which the page carries out once it has drawn its items: sending or
+ * removing moves the items the grid is about to read.
+ */
+[[nodiscard]] Bulk draw_pick_bar(const std::vector<const edit::Item*>& shown) noexcept {
+    Bulk bulk;
+    Model& state = model();
+    if (!state.picked.empty()) {
+        controls::space(controls::kRowSpacing);
+        const ImGuiStyle& style = ImGui::GetStyle();
+        auto* draw = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float width = (std::max)(0.0F, ImGui::GetContentRegionAvail().x - overlay_width());
+        const float padding = pixels(kPickBarPadding);
+        const float inset = pixels(kPickBarInset);
+        const float line = ImGui::GetFrameHeight();
+        // Select All Shown and Clear Selection sit at the far end, apart from what acts on the items,
+        // or on a line of their own when the actions leave them no room. The actions measure the same
+        // whatever is selected, so that turns on the width alone.
+        const float trailing = button_width(kSelectAllLabel) + style.ItemSpacing.x + button_width(kClearLabel);
+        const bool wrapped = (inset * 2.0F) + pick_actions_width() + style.ItemSpacing.x + trailing > width;
+        const float second = origin.y + padding + line + style.ItemSpacing.y;
+        const float bottom = (wrapped ? second + line : origin.y + padding + line) + padding;
+        // The controls are laid out first and the strip's fill goes in behind them afterwards.
+        draw->ChannelsSplit(2);
+        draw->ChannelsSetCurrent(1);
+        ImGui::SetCursorScreenPos({origin.x + inset, origin.y + padding});
+        bulk = draw_pick_actions();
+        ImGui::SameLine();
+        const float trailingLeft = (std::max)(ImGui::GetCursorScreenPos().x, origin.x + width - inset - trailing);
+        ImGui::SetCursorScreenPos(wrapped ? ImVec2{origin.x + inset, second} : ImVec2{trailingLeft, origin.y + padding});
+        if (ImGui::Button(kSelectAllLabel)) {
+            for (const edit::Item* item : shown) {
+                if (!is_picked(item->instanceSoid)) {
+                    state.picked.push_back(item->instanceSoid);
+                }
             }
         }
+        ImGui::SameLine();
+        if (ImGui::Button(kClearLabel)) {
+            state.picked.clear();
+        }
+        draw->ChannelsSetCurrent(0);
+        const ImVec2 corner{origin.x + width, bottom};
+        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(ImGuiCol_Header), pixels(controls::kRowRounding));
+        draw->AddRectFilled(origin, {origin.x + pixels(controls::kRailWidth), bottom}, ImGui::GetColorU32(ImGuiCol_CheckMark));
+        draw->ChannelsMerge();
+        ImGui::SetCursorScreenPos({origin.x, bottom});
+        ImGui::Dummy({width, 0.0F});
     }
-    ImGui::SameLine();
-    if (ImGui::Button(clear)) {
-        state.picked.clear();
-    }
-    const float bottom = at.y + ImGui::GetFrameHeight() + padding;
-    draw->ChannelsSetCurrent(0);
-    draw->AddRectFilled(origin, {origin.x + width, bottom}, ImGui::GetColorU32(ImGuiCol_Header), pixels(controls::kRowRounding));
-    draw->AddRectFilled(origin, {origin.x + pixels(controls::kRailWidth), bottom}, ImGui::GetColorU32(ImGuiCol_CheckMark));
-    draw->ChannelsMerge();
+    // The question is drawn whatever is selected now, so one an undo emptied the selection under
+    // closes itself rather than waiting for the next selection to bring it back.
     if (draw_remove_picked_modal()) {
         bulk.kind = Bulk::Kind::remove;
     }
-    ImGui::SetCursorScreenPos({origin.x, bottom});
-    ImGui::Dummy({width, 0.0F});
     return bulk;
+}
+
+/**
+ * @return The height of one row of the page's two lists, the profile's stacks and the search's other
+ * results alike, on whole pixels: the taller of the icon and a field, with the row's padding over and
+ * under it. The lines are set edge to edge, so this is also the pitch both clippers seek by, and the
+ * two lists read as one when a page shows both.
+ */
+[[nodiscard]] float list_row_height() noexcept {
+    return std::ceil((std::max)(pixels(kProfileIconExtent), ImGui::GetFrameHeight())
+                     + (pixels(kProfileRowPadding) * 2.0F));
+}
+
+/**
+ * Paints the ground of one list row: nothing at rest, and the fill it takes while it is lit. The
+ * game lists its currencies and materials as plain rows, with nothing filled in until the pointer
+ * reaches a row, and both lists take their ground from here so they answer the pointer alike.
+ * @param lo Top-left of the row in screen space.
+ * @param hi Bottom-right of the row in screen space.
+ * @param lit True under the pointer, or while the row's own menu or question is open.
+ */
+void draw_row_ground(ImVec2 lo, ImVec2 hi, bool lit) noexcept {
+    if (lit) {
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            lo, hi, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), pixels(controls::kRowRounding));
+    }
 }
 
 /** One search result kept somewhere other than the page's own list. */
@@ -847,7 +931,7 @@ struct Hit {
 
 /**
  * Takes the page to where one result is kept: the character that keeps it, with the item open in
- * the pane and the search carried over, or the account page for a stack.
+ * the pane and the search carried over, or the profile page for a stack.
  * @param search The search that found it, which the page it goes to is given.
  */
 void go_to(const Hit& hit, const char* search) noexcept {
@@ -880,19 +964,19 @@ void go_to(const Hit& hit, const char* search) noexcept {
     const ImVec2 corner{origin.x + width, origin.y + rowHeight};
     const bool clicked = ImGui::InvisibleButton("hit", {width, rowHeight});
     const bool hovered = ImGui::IsItemHovered();
-    if (hovered) {
-        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), pixels(controls::kRowRounding));
-    }
-    draw->AddLine({origin.x, corner.y}, {corner.x, corner.y}, ImGui::GetColorU32(kProfileRowRule));
+    draw_row_ground(origin, corner, hovered);
     art::icon(*hit.definition, {origin.x + inset, origin.y + ((rowHeight - icon) * 0.5F)}, icon);
 
-    std::string where = hit.owner == kAccountItems ? std::string(kAccountLabel) : character_label(hit.owner);
+    std::string where = hit.owner == kAccountItems ? std::string(kProfileLabel) : character_label(hit.owner);
     if (hit.equipped) {
-        where += std::string("  /  ") + kEquippedWhere;
+        where += controls::kDetailSeparator;
+        where += kEquippedWhere;
     } else if (hit.postmaster) {
-        where += std::string("  /  ") + kPostmasterWhere;
+        where += controls::kDetailSeparator;
+        where += kPostmasterWhere;
     } else if (hit.item == nullptr || hit.quantity > 1) {
-        where += "  /  " + std::to_string(hit.quantity);
+        where += controls::kDetailSeparator;
+        where += std::to_string(hit.quantity);
     }
     const float whereWidth = ImGui::CalcTextSize(where.c_str()).x;
     const float text = origin.y + ((rowHeight - ImGui::GetTextLineHeight()) * 0.5F);
@@ -935,7 +1019,7 @@ bool draw_elsewhere(const std::string& query, const char* search, std::size_t sk
     card_grid(ImGui::GetContentRegionAvail().x, spacing, pixels(kProfileRowMinimumWidth), columns, width);
     const auto perRow = static_cast<std::size_t>(columns);
     const std::size_t lines = (hits.size() + perRow - 1) / perRow;
-    const float rowHeight = pixels(kProfileIconExtent) + (pixels(kProfileRowPadding) * 2.0F);
+    const float rowHeight = list_row_height();
     const Hit* pressed = nullptr;
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{spacing, 0.0F});
     ImGuiListClipper clipper;
@@ -973,7 +1057,7 @@ void draw_slot_picker() noexcept {
     Model& state = model();
     const char* preview =
         state.inventorySlot < 0 ? "All Slots" : edit::kSlots[state.inventorySlot];
-    if (!controls::begin_picker("##inventory_slot", preview, pixels(kSlotPickerWidth))) {
+    if (!controls::begin_picker("##inventory_slot", preview, pixels(controls::kSlotPickerWidth))) {
         return;
     }
     if (controls::picker_row("All Slots", state.inventorySlot < 0)) {
@@ -1007,10 +1091,34 @@ void draw_slot_picker() noexcept {
 static_assert(kSlotCount == inv::kEquipmentSlotCount,
               "Bucket ranks assume the module and the account agree on the slot count.");
 
+/**
+ * Draws a page's count in the muted capitals the editor counts a list in: how many the page holds,
+ * or how many of them show while a search or a filter narrows it.
+ * @param shown Rows the page's filters let through.
+ * @param held Rows the page holds in all.
+ * @param one What one row is, such as "Item".
+ * @param many What several are, such as "Items".
+ */
+void draw_count(std::size_t shown, std::size_t held, const char* one, const char* many) noexcept {
+    char count[kMessageCapacity]{};
+    if (shown == held) {
+        (void)std::snprintf(count, sizeof count, "%zu %s", held, held == 1 ? one : many);
+    } else {
+        (void)std::snprintf(count, sizeof count, "%zu of %zu", shown, held);
+    }
+    tooltip::draw_label(count);
+}
+
 /** Draws everything the character carries, equipped and stowed, divided into its buckets. */
 void draw_character_items() noexcept {
     Model& state = model();
     prune_picks();
+    // Escape lets the selection go, unless something else is taking the key: a field being typed in,
+    // or a list or a question open over the page. It is read before anything on the page answers it.
+    if (!state.picked.empty() && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput
+        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+        state.picked.clear();
+    }
     ImGui::SetNextItemWidth(pixels(kSearchWidth));
     (void)controls::search("##inventory_search",
                            "Search Inventory...",
@@ -1025,23 +1133,11 @@ void draw_character_items() noexcept {
     ImGui::AlignTextToFramePadding();
     // The list is built once, before the child, so the count and the grid agree on the filters.
     const std::vector<const edit::Item*> items = filtered_character_items();
-    const std::size_t held = character().inventory.count + equipped_count();
-    if (items.size() == held) {
-        ImGui::TextDisabled("%zu Items", held);
-    } else {
-        ImGui::TextDisabled("%zu of %zu", items.size(), held);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Ctrl+click items to select several at once.");
-    }
-    draw_add_action(Category::weapons);
+    draw_count(items.size(), character().inventory.count + equipped_count(), "Item", "Items");
+    draw_add_action(Category::weapons, state.inventorySlot);
     // Sending or removing moves the items the grid is about to read, so an action on the selection
     // waits until the grid is drawn.
-    Bulk bulk;
-    if (!state.picked.empty()) {
-        controls::space(controls::kRowSpacing);
-        bulk = draw_pick_bar(items);
-    }
+    const Bulk bulk = draw_pick_bar(items);
 
     if (!ImGui::BeginChild("owned")) {
         ImGui::EndChild();
@@ -1083,7 +1179,13 @@ void draw_character_items() noexcept {
     // uses. Sundial lays its character inventory out this way; splitting the page into fixed
     // columns of single-column lists wasted most of the width whatever the tiles were sized at.
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    bool leading = true;
     for (const auto& [group, members] : ordered) {
+        // Every section after the first is set apart by the page's section gap, open or folded.
+        if (!leading) {
+            controls::space(controls::kSectionSpacing);
+        }
+        leading = false;
         if (!controls::section_header(group.c_str(), members.size())) {
             continue;
         }
@@ -1129,11 +1231,12 @@ void draw_character_items() noexcept {
                        rowHeight);
         }
         ImGui::PopStyleVar();
-        controls::space(controls::kSectionSpacing);
     }
     const std::string query = edit::searchable(state.inventorySearch);
     if (items.empty()) {
-        ImGui::TextDisabled(query.empty() ? "No items match." : "Nothing on this character matches.");
+        // A search or the slot picker is what emptied the page; with neither, the character has nothing.
+        const bool narrowed = !query.empty() || state.inventorySlot >= 0;
+        ImGui::TextColored(tooltip::muted(), "%s", narrowed ? kNoMatchLabel : "No items on this character.");
     }
     // A search reaches past this character: what the others keep, and the account's stacks.
     (void)draw_elsewhere(query, state.inventorySearch, state.character, true);
@@ -1152,15 +1255,16 @@ void erase_profile_item(std::size_t index) noexcept {
 }
 
 /**
- * Draws one account-wide stack as a single compact row.
+ * Draws one profile stack as a single compact row.
  * Everything is laid out through the normal cursor: the icon, a spacer that reserves the name
- * column, then the controls. Positioning any of it with SetCursorPos left the parent unable to
- * size itself, which Dear ImGui reports and which broke the later columns.
+ * column, then the controls. Each part is set on the row's middle by moving the cursor down before
+ * the item that follows it, never after, since a cursor moved and left without an item behind it
+ * left the parent unable to size itself, which Dear ImGui reports and which broke the later columns.
  * @param index Row in the draft profile list.
- * @param width Card width in framebuffer pixels.
- * @param rowHeight Content height in framebuffer pixels, shared with the caller's clipper so the
+ * @param width Row width in framebuffer pixels.
+ * @param rowHeight Row height in framebuffer pixels, the pitch the caller's clipper seeks by, so the
  * lines it skips are the same height as the lines it draws.
- * @return True when the card's removal was confirmed. The caller erases it after the loop.
+ * @return True when the stack's removal was confirmed. The caller erases it after the loop.
  */
 [[nodiscard]] bool draw_profile_item(std::size_t index, float width, float rowHeight) noexcept {
     Model& state = model();
@@ -1170,53 +1274,49 @@ void erase_profile_item(std::size_t index) noexcept {
     const float inset = pixels(kProfileRowInset);
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float quantityWidth = pixels(kQuantityWidth);
-    const float removeWidth =
-        ImGui::CalcTextSize(kRemoveLabel).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
+    const float removeWidth = button_width(kRemoveLabel);
     const float nameWidth = (std::max)(
         0.0F, width - (inset * 3.0F) - icon - quantityWidth - removeWidth - (spacing * 2.0F));
 
     ImGui::PushID(static_cast<int>(index));
     ImGui::BeginGroup();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    // The row's extent is known before its content, so the fill, the hover and the tooltip can all
-    // be settled up front. The fill is painted first because the draw list paints in order, and
-    // filling after the group had measured itself covered the icon and the name with a blank card.
-    const ImVec2 fillMin{origin.x, origin.y - pixels(kProfileRowPadding)};
-    const ImVec2 fillMax{origin.x + width, origin.y + rowHeight + pixels(kProfileRowPadding)};
-    const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(fillMin, fillMax);
-    // The game lists its currencies and materials as plain rows ruled off from one another, with
-    // nothing filled in until the pointer reaches a row.
-    if (hovered) {
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            fillMin, fillMax, ImGui::GetColorU32(ImGuiCol_FrameBgHovered));
-    }
-    ImGui::GetWindowDrawList()->AddLine({fillMin.x, fillMax.y},
-                                        {fillMax.x, fillMax.y},
-                                        ImGui::GetColorU32(kProfileRowRule));
+    const ImVec2 corner{origin.x + width, origin.y + rowHeight};
+    // A held button blocks the window's hover, and the Remove button is shown only on a hovered row:
+    // without the flag it vanished the moment it was pressed, so its release never landed.
+    const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+                         && ImGui::IsMouseHoveringRect(origin, corner);
+    // The row stays lit while its menu or its question is open, so it is plain which row they ask about.
+    const bool asked = ImGui::IsPopupOpen(kStackMenuId) || ImGui::IsPopupOpen(kRemoveStackTitle);
+    // The row's extent is known before its content, so its ground goes in first: the draw list paints
+    // in order, and a fill painted after the group had measured itself covered the icon and the name.
+    draw_row_ground(origin, corner, hovered || asked);
+    const float middle = origin.y + (rowHeight * 0.5F);
 
-    ImGui::Dummy({inset, icon});
+    ImGui::Dummy({inset, rowHeight});
     ImGui::SameLine(0.0F, 0.0F);
-    const ImVec2 iconAt = ImGui::GetCursorScreenPos();
     if (definition != nullptr) {
-        art::icon(*definition, iconAt, icon);
+        art::icon(*definition, {ImGui::GetCursorScreenPos().x, middle - (icon * 0.5F)}, icon);
     }
-    ImGui::Dummy({icon, icon});
+    ImGui::Dummy({icon, rowHeight});
 
     ImGui::SameLine(0.0F, inset);
-    const ImVec2 nameAt = ImGui::GetCursorScreenPos();
+    const float nameLeft = ImGui::GetCursorScreenPos().x;
     art::clipped_text(definition != nullptr ? definition->name : std::string("Unknown Item"),
-                      {nameAt.x, nameAt.y + ((icon - ImGui::GetTextLineHeight()) * 0.5F)},
+                      {nameLeft, middle - (ImGui::GetTextLineHeight() * 0.5F)},
                       nameWidth,
                       ImGui::GetColorU32(definition != nullptr ? ImGuiCol_Text : ImGuiCol_TextDisabled));
-    ImGui::Dummy({nameWidth, icon});
+    ImGui::Dummy({nameWidth, rowHeight});
     // The item reads the same here as it does anywhere else in the editor. The controls at the far
     // end are excluded, so the tooltip does not stand over the field the player is reaching for.
-    if (hovered && definition != nullptr
-        && ImGui::GetIO().MousePos.x < nameAt.x + nameWidth) {
+    if (hovered && definition != nullptr && ImGui::GetIO().MousePos.x < nameLeft + nameWidth) {
         tooltip::draw(*definition, nullptr);
     }
 
+    // The field and the removal sit on the row's middle, as the icon and the name do.
+    const float field = middle - (ImGui::GetFrameHeight() * 0.5F);
     ImGui::SameLine(0.0F, spacing);
+    ImGui::SetCursorScreenPos({ImGui::GetCursorScreenPos().x, field});
     const int limit = definition != nullptr ? (std::max)(1, definition->detail.maxStackSize)
                                             : kUnknownStackLimit;
     ImGui::SetNextItemWidth(quantityWidth);
@@ -1228,27 +1328,31 @@ void erase_profile_item(std::size_t index) noexcept {
     record_scalar_edit(changed);
 
     ImGui::SameLine(0.0F, spacing);
+    ImGui::SetCursorScreenPos({ImGui::GetCursorScreenPos().x, field});
     // The removal is offered only on the row under the pointer, so a page of stacks does not read
     // as a page of Remove buttons. Its width is reserved either way, so the columns hold still.
-    if (hovered || ImGui::IsPopupOpen(kRemoveStackTitle)) {
-        if (ImGui::Button(kRemoveLabel)) {
-            ImGui::OpenPopup(kRemoveStackTitle);
-        }
+    bool ask = false;
+    if (hovered || asked) {
+        ask = ImGui::Button(kRemoveLabel);
     } else {
         ImGui::Dummy({removeWidth, ImGui::GetFrameHeight()});
+    }
+    // The row's own menu offers the same removal, as a card's menu offers a card's.
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        ImGui::OpenPopup(kStackMenuId);
+    }
+    if (controls::begin_menu(kStackMenuId)) {
+        ask = ImGui::Selectable(kRemoveLabel) || ask;
+        controls::end_menu();
+    }
+    // The question is opened once the menu is shut: opened from inside it, it closed with the menu.
+    if (ask) {
+        ImGui::OpenPopup(kRemoveStackTitle);
     }
 
     bool removed = false;
     if (ImGui::BeginPopupModal(kRemoveStackTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(definition != nullptr ? definition->name.c_str() : "Unknown Item");
-        if (ImGui::Button("Remove Stack")) {
-            removed = true;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            ImGui::CloseCurrentPopup();
-        }
+        removed = confirm_removal(definition != nullptr ? definition->name.c_str() : "Unknown Item", kUndoOneNote);
         ImGui::EndPopup();
     }
     ImGui::EndGroup();
@@ -1323,9 +1427,9 @@ struct ProfileGroup {
 }
 
 /**
- * Draws one section of account stacks as a responsive grid.
+ * Draws one section of profile stacks as a responsive grid.
  * @param rows Draft indices filed under this section.
- * @param rowHeight Row content height in framebuffer pixels.
+ * @param rowHeight Row height in framebuffer pixels, which is also the pitch of its lines.
  * @param removal Receives the draft index whose removal was confirmed, if any.
  */
 void draw_profile_group(const std::vector<std::size_t>& rows,
@@ -1338,11 +1442,12 @@ void draw_profile_group(const std::vector<std::size_t>& rows,
     const auto perRow = static_cast<std::size_t>(columns);
     const std::size_t lines = (rows.size() + perRow - 1) / perRow;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{spacing, pixels(kProfileRowGap)});
-    // The account holds up to 701 stacks. Building all of them cost more per frame than the whole
+    // Lines are set edge to edge and ruled off from one another, as the search's other results are.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{spacing, 0.0F});
+    // The profile holds up to 701 stacks. Building all of them cost more per frame than the whole
     // of the rest of the page, so only the lines the player can see are submitted.
     ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(lines), rowHeight + pixels(kProfileRowGap));
+    clipper.Begin(static_cast<int>(lines), rowHeight);
     while (clipper.Step()) {
         for (int line = clipper.DisplayStart; line < clipper.DisplayEnd; ++line) {
             const std::size_t first = static_cast<std::size_t>(line) * perRow;
@@ -1379,7 +1484,7 @@ void draw_profile_items() noexcept {
 
     ImGui::SetNextItemWidth(pixels(kSearchWidth));
     (void)controls::search("##profile_search",
-                           "Search Account Items...",
+                           "Search Profile Items...",
                            state.profileSearch,
                            sizeof state.profileSearch);
     if (ImGui::IsItemHovered()) {
@@ -1387,12 +1492,8 @@ void draw_profile_items() noexcept {
     }
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
-    if (shown == held) {
-        ImGui::TextDisabled("%zu Stacks", held);
-    } else {
-        ImGui::TextDisabled("%zu of %zu", shown, held);
-    }
-    draw_add_action(Category::materials);
+    draw_count(shown, held, "Stack", "Stacks");
+    draw_add_action(Category::materials, -1);
 
     if (!ImGui::BeginChild("profile_items")) {
         ImGui::EndChild();
@@ -1400,21 +1501,26 @@ void draw_profile_items() noexcept {
     }
     const std::string query = edit::searchable(state.profileSearch);
     if (groups.empty()) {
-        ImGui::TextDisabled(query.empty() ? "No items match." : "No account items match.");
+        ImGui::TextColored(tooltip::muted(), "%s", query.empty() ? "No stacks on this profile." : kNoMatchLabel);
         // A search reaches the characters too, whose items this page does not list.
         (void)draw_elsewhere(query, state.profileSearch, kAccountItems, false);
         ImGui::EndChild();
         return;
     }
-    const float rowHeight = (std::max)(pixels(kProfileIconExtent), ImGui::GetFrameHeight());
+    const float rowHeight = list_row_height();
     // A confirmed removal moves every later row, so the list is left and erased afterwards.
     std::size_t removal = held;
+    bool leading = true;
     for (const ProfileGroup& group : groups) {
+        // Every section after the first is set apart by the page's section gap, open or folded.
+        if (!leading) {
+            controls::space(controls::kSectionSpacing);
+        }
+        leading = false;
         if (!controls::section_header(group.name.c_str(), group.rows.size())) {
             continue;
         }
         draw_profile_group(group.rows, rowHeight, removal);
-        controls::space(controls::kSectionSpacing);
     }
     if (removal < held) {
         erase_profile_item(removal);

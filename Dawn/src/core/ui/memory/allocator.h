@@ -4,8 +4,13 @@
 
 namespace dawn::core::ui::memory {
 
-/** 8 MiB caps all Dear ImGui context, font, widget, and draw storage. */
-inline constexpr std::size_t kArenaCapacityBytes = 8'388'608;
+/**
+ * 64 MiB caps all Dear ImGui context, font, widget, and draw storage.
+ * The font atlas is most of it: at its 2048 x 2048 cap it takes 16 MiB, and while it grows or
+ * repacks, the textures it replaces stay alive until the renderer lets them go a frame later.
+ * Dear ImGui does not check an allocation, so an arena too small for that faults the frame.
+ */
+inline constexpr std::size_t kArenaCapacityBytes = 67'108'864;
 
 /** Copied allocator counters. The arena storage itself is not exposed. */
 struct Stats {

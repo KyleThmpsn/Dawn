@@ -12,11 +12,12 @@ namespace edit = state::editor;
 /**
  * Reads every saved loadout from the Dawn folder, beside the HUD's own settings.
  * Loadouts are the editor's own data rather than game state, so they are kept out of the player
- * database, whose schema the game and Sundial both depend on. A malformed entry is skipped rather
- * than failing the read, so a hand edit costs only the line it broke.
- * @param loadouts Receives the loadouts, empty when there is no file yet.
- * @return False when a file is there but could not be read. The caller must not save over it then,
- * which would replace every loadout it holds with only the ones read this session.
+ * database, whose schema the game and Sundial both depend on. A line that does not read as one
+ * whole loadout is left out and the rest are still read, so a hand edit hides only the line it
+ * broke, but the file then counts as unreadable: a save writes the list whole, and would drop it.
+ * @param loadouts Receives the loadouts that read, empty when there is no file yet.
+ * @return False when a file is there but could not be read in full. The caller must not save over
+ * it then, which would replace every loadout it holds with only the ones read this session.
  */
 [[nodiscard]] bool load(std::vector<edit::SavedLoadout>& loadouts) noexcept;
 

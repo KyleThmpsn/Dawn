@@ -20,29 +20,31 @@ using scaling::dpi::pixels;
 
 /** Scope rows, in the order of the PlugScope values. */
 constexpr const char* kScopeLabels[]{
-    "Compatible", "Socket + Gear Type", "Socket Type", "Gear Type", "All"};
+    "Compatible", "Socket and Gear Type", "Socket Type", "Gear Type", "All"};
 /** Warning shown for every scope past the compatible one. */
 constexpr const char* kExpandedScopeWarning = "May include perks this item does not support.";
 /** Stronger warning for the unrestricted scope. */
 constexpr const char* kUnrestrictedScopeWarning =
     "Every discovered perk; some combinations stop it loading.";
 
-constexpr float kCancelButtonWidth = 100.0F;
-/** Height the results list leaves for the row of actions under it. */
-constexpr float kActionRowLines = 1.6F;
 /** 160 bytes hold the sheet's muted line: the socket, and the name of the perk in it now. */
 constexpr std::size_t kSocketLineCapacity = 160;
 /** Width of the scope selector at the end of the filter row. */
 constexpr float kScopeWidth = 190.0F;
-/** The second filter row: type, rarity and order selectors, then the internal-plug toggle. */
-constexpr float kTypeFilterWidth = 180.0F;
+/**
+ * The second filter row: type, rarity and order selectors, then the internal-plug toggle. The type
+ * selector takes what the others leave, and keeps at least this however narrow the sheet is drawn.
+ */
+constexpr float kTypeFilterMinimumWidth = 120.0F;
 constexpr float kRarityFilterWidth = 110.0F;
 constexpr float kSortWidth = 110.0F;
 constexpr const char* kSortLabels[]{"By Type", "Name A-Z", "Rarity"};
 static_assert(std::size(kSortLabels) == static_cast<std::size_t>(Sort::count),
               "Every sort order needs a label.");
 constexpr const char* kAnyRarityLabel = "All Rarities";
+/** The toggle that offers the plugs the catalog marks internal, and what those are. */
 constexpr const char* kDummyItemsLabel = "Dummy Items";
+constexpr const char* kInternalItemsTip = "Placeholder and test definitions the game never shows.";
 /** 64 bytes hold a plug type with its count. */
 constexpr std::size_t kTypePreviewCapacity = 64;
 
@@ -102,9 +104,20 @@ struct Matches {
     return matches;
 }
 
-/** Draws the second filter row: plug type, rarity, order, and the internal-plug toggle. */
+/**
+ * Draws the second filter row: plug type, rarity, order, and the internal-plug toggle. Everything
+ * after the type is measured, so the type takes what is left and the row ends at the sheet's edge,
+ * as the search row over it does.
+ */
 void draw_filter_row(const Matches& matches) noexcept {
     SocketPicker& picker = model().picker;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float toggleWidth = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x
+                              + ImGui::CalcTextSize(kDummyItemsLabel).x;
+    const float trailing = pixels(kRarityFilterWidth) + pixels(kSortWidth) + toggleWidth
+                           + (style.ItemSpacing.x * 3.0F);
+    const float typeWidth = (std::max)(pixels(kTypeFilterMinimumWidth),
+                                       ImGui::GetContentRegionAvail().x - trailing);
     char preview[kTypePreviewCapacity]{};
     if (picker.type.empty()) {
         (void)std::snprintf(preview, sizeof preview, "All Types (%zu)", matches.total);
@@ -113,7 +126,7 @@ void draw_filter_row(const Matches& matches) noexcept {
         (void)std::snprintf(preview, sizeof preview, "%s (%zu)", picker.type.c_str(),
                             found != matches.types.end() ? found->second : 0U);
     }
-    if (controls::begin_picker("##perk_type", preview, pixels(kTypeFilterWidth))) {
+    if (controls::begin_picker("##perk_type", preview, typeWidth)) {
         char row[kTypePreviewCapacity]{};
         (void)std::snprintf(row, sizeof row, "All Types (%zu)", matches.total);
         if (controls::picker_row(row, picker.type.empty())) {
@@ -151,7 +164,10 @@ void draw_filter_row(const Matches& matches) noexcept {
         picker.sort = static_cast<Sort>(sort);
     }
     ImGui::SameLine();
-    (void)ImGui::Checkbox(kDummyItemsLabel, &picker.includeInternal);
+    (void)controls::checkbox(kDummyItemsLabel, &picker.includeInternal);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", kInternalItemsTip);
+    }
 }
 
 /** Draws the scope picker, at the width the caller set, and the warning the chosen scope earns. */
@@ -189,24 +205,29 @@ void draw_scope_row(const edit::CatalogItem& definition) noexcept {
                                  float rowHeight) noexcept {
     Model& state = model();
     ImGui::PushID(static_cast<int>(plug.definition.definitionIndex));
+    auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 corner{origin.x + width, origin.y + rowHeight};
     const bool chosen = current && *current == plug.definition.definitionHash;
     // The row is the tooltip's own perk row with the plug's type under its name, and the plug's
     // own tooltip under the pointer: the same plug reads the same in the list as it does fitted.
+    // Its fill runs the list's whole width from rule to rule, and its words keep the tooltip's inset.
     const bool clicked = ImGui::InvisibleButton("perk", {width, rowHeight});
     const bool hovered = ImGui::IsItemHovered();
     if (chosen || hovered) {
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            origin,
-            {origin.x + width, origin.y + rowHeight},
-            ImGui::GetColorU32(chosen ? ImGuiCol_Header : ImGuiCol_FrameBgHovered),
-            pixels(controls::kRowRounding));
+        draw->AddRectFilled(origin, corner, ImGui::GetColorU32(chosen ? ImGuiCol_Header : ImGuiCol_FrameBgHovered),
+                            pixels(controls::kRowRounding));
     }
-    ImGui::GetWindowDrawList()->AddLine({origin.x, origin.y + rowHeight},
-                                        {origin.x + width, origin.y + rowHeight},
-                                        ImGui::GetColorU32(tooltip::rule_color()));
-    ImGui::SetCursorScreenPos(origin);
-    tooltip::draw_perk_row(&plug, width, tooltip::PerkDetail::typed);
+    // The fitted perk carries the rail a picker's chosen row carries, so it still reads apart from
+    // a row that is only under the pointer.
+    if (chosen) {
+        draw->AddRectFilled(origin, {origin.x + pixels(controls::kRailWidth), corner.y}, ImGui::GetColorU32(ImGuiCol_Text));
+    }
+    // The rule is the row's own last line, so the fill of the row under it does not cover it.
+    draw->AddLine({origin.x, corner.y - 1.0F}, {corner.x, corner.y - 1.0F}, ImGui::GetColorU32(tooltip::rule_color()));
+    const float inset = tooltip::padding();
+    ImGui::SetCursorScreenPos({origin.x + inset, origin.y});
+    tooltip::draw_perk_row(&plug, (std::max)(0.0F, width - (inset * 2.0F)), tooltip::PerkDetail::typed);
     if (hovered) {
         tooltip::draw_plug(plug);
     }
@@ -222,7 +243,9 @@ void draw_scope_row(const edit::CatalogItem& definition) noexcept {
             record_edit(true);
         } else {
             // Nothing is closed and nothing changes, so without a word the click looked ignored.
+            // The sheet says it even when the same words stood on the bar as the picker opened.
             state.status = kPerkRefused;
+            state.statusAtSheet.clear();
             record_edit(false);
         }
     }
@@ -253,7 +276,10 @@ void draw_perk_editor(const edit::CatalogItem& definition,
     if (!edit::materialize(resolved, catalog)) {
         return;
     }
-    auto* draw = ImGui::GetWindowDrawList();
+    // The frame's own edges, inside its hairline, which each row's hit target spans as its fill does.
+    const float border = ImGui::GetStyle().WindowBorderSize;
+    const float left = ImGui::GetWindowPos().x + border;
+    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - border;
     bool first = true;
     for (std::size_t lane = 0; lane < resolved.sockets.plugCount; ++lane) {
         const auto& current = resolved.sockets.plugs[lane];
@@ -264,25 +290,20 @@ void draw_perk_editor(const edit::CatalogItem& definition,
             continue;
         }
         // Each socket is the tooltip's own perk row, as it is on the tooltip, with the plug's own
-        // tooltip under the pointer, and the whole row is the control that opens the picker for
-        // that lane. The hit target goes in first, so the hover fill sits under the row.
+        // tooltip under the pointer, and the whole row, edge to edge and rule to rule, is the control
+        // that opens the picker for that lane. The rows meet the rules between them.
         const float rowHeight = tooltip::perk_row_height(fitted, width, tooltip::PerkDetail::name);
         ImGui::PushID(static_cast<int>(lane));
         if (!first) {
-            tooltip::draw_rule();
+            tooltip::draw_row_rule();
         }
         first = false;
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        const bool clicked = ImGui::InvisibleButton("socket", {width, rowHeight});
+        ImGui::SetCursorScreenPos({left, origin.y});
+        const bool clicked = ImGui::InvisibleButton("socket", {right - left, rowHeight});
         const bool hovered = ImGui::IsItemHovered();
-        if (hovered) {
-            draw->AddRectFilled(origin,
-                                {origin.x + width, origin.y + rowHeight},
-                                ImGui::GetColorU32(ImGuiCol_FrameBgHovered),
-                                pixels(controls::kRowRounding));
-        }
         ImGui::SetCursorScreenPos(origin);
-        tooltip::draw_perk_row(fitted, width, tooltip::PerkDetail::name);
+        tooltip::draw_perk_row(fitted, width, tooltip::PerkDetail::name, hovered);
         if (hovered && fitted != nullptr) {
             tooltip::draw_plug(*fitted);
         }
@@ -298,6 +319,8 @@ void draw_perk_picker() noexcept {
     Model& state = model();
     if (state.picker.requested) {
         state.picker.requested = false;
+        // What the bar says as the picker opens came before it, so the picker does not repeat it.
+        state.statusAtSheet = state.status;
         ImGui::OpenPopup(kPickerTitle);
     }
     // The picker is a sheet on the tooltip's own ground, as the game's socket picker lays over the
@@ -313,7 +336,9 @@ void draw_perk_picker() noexcept {
         tooltip::end_sheet();
         return;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    // Escape closes a field's own list first, and a field being typed in keeps it.
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput
+        && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         ImGui::CloseCurrentPopup();
     }
 
@@ -329,8 +354,9 @@ void draw_perk_picker() noexcept {
     char socket[kSocketLineCapacity]{};
     (void)std::snprintf(socket,
                         sizeof socket,
-                        "Socket %zu  /  %s",
+                        "Socket %zu%s%s",
                         state.picker.lane + 1,
+                        controls::kDetailSeparator,
                         fitted != nullptr ? fitted->name.c_str() : "Empty");
     tooltip::draw_sheet_head(definition->name, socket);
     controls::space(controls::kSectionSpacing);
@@ -350,38 +376,40 @@ void draw_perk_picker() noexcept {
     const std::vector<const edit::CatalogItem*>& options = matches.options;
     controls::space(controls::kRowSpacing);
     char count[32]{};
-    (void)std::snprintf(count, sizeof count, "%zu Perks", options.size());
+    (void)std::snprintf(
+        count, sizeof count, options.size() == 1 ? "%zu Perk" : "%zu Perks", options.size());
     tooltip::draw_label(count);
     controls::space(controls::kRuleSpacing);
     ImGui::Separator();
     bool applied = false;
-    // A typed row is one height whatever plug it holds, so the clipper can pitch off it.
+    // A typed row is one height whatever plug it holds, and the rows meet with no gap, so the
+    // clipper pitches off the row alone.
     const float rowHeight = tooltip::perk_row_height(nullptr, 0.0F, tooltip::PerkDetail::typed);
-    const float pitch = rowHeight + ImGui::GetStyle().ItemSpacing.y;
-    const float listHeight =
-        (std::max)(rowHeight,
-                   ImGui::GetContentRegionAvail().y
-                       - (ImGui::GetFrameHeightWithSpacing() * kActionRowLines));
+    // Under the list: the item spacing after it, a row gap and the outcome line, so the line stands
+    // on the sheet's bottom edge however many perks the list holds.
+    const float below = ImGui::GetStyle().ItemSpacing.y + pixels(controls::kRowSpacing) + ImGui::GetTextLineHeight();
+    const float listHeight = (std::max)(rowHeight, ImGui::GetContentRegionAvail().y - below);
     if (ImGui::BeginChild("perk_results", {0.0F, listHeight})) {
         const float width = ImGui::GetContentRegionAvail().x;
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ImGui::GetStyle().ItemSpacing.x, 0.0F});
         ImGuiListClipper clip;
-        clip.Begin(static_cast<int>(options.size()), pitch);
+        clip.Begin(static_cast<int>(options.size()), rowHeight);
         while (clip.Step()) {
             for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
                 applied |= draw_perk_row(
                     *options[static_cast<std::size_t>(i)], *item, current, width, rowHeight);
             }
         }
+        ImGui::PopStyleVar();
         if (options.empty()) {
             ImGui::TextColored(tooltip::muted(), "No perks match.");
         }
     }
     ImGui::EndChild();
     controls::space(controls::kRowSpacing);
-    // The one action sits at the far end, as the game ends its sheets.
-    const float cancelWidth = pixels(kCancelButtonWidth);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - cancelWidth);
-    if (applied || ImGui::Button("Cancel", {cancelWidth, 0.0F})) {
+    // The sheet lies over the bar, so a perk the socket refuses is said here, where it was picked.
+    draw_sheet_outcome();
+    if (applied) {
         ImGui::CloseCurrentPopup();
     }
     tooltip::end_sheet();

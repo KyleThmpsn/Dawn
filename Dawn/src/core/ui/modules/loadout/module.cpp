@@ -2,7 +2,9 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <cstring>
 #include <imgui.h>
 #include <string_view>
 
@@ -27,6 +29,58 @@ constexpr std::string_view kDisplayName = "Loadout";
 
 registry::PageRegistration g_page;
 
+/** 256 bytes hold anything the editor copies, such as a tag or an item's name. */
+constexpr std::size_t kCopyCapacity = 256;
+
+/** The one copy waiting on the game window, and what the last one came to. */
+struct Clipboard {
+    SRWLOCK lock{SRWLOCK_INIT};
+    std::array<char, kCopyCapacity> text{};
+    std::size_t length{};
+    bool waiting{};
+    bool answered{};
+    bool copied{};
+};
+
+Clipboard g_clipboard;
+
+/**
+ * Replaces the clipboard's contents with the text, owned by the game window.
+ * @param text UTF-8, handed to Windows as UTF-16 so any name survives the copy.
+ * @return True only when Windows took the memory.
+ */
+[[nodiscard]] bool write_clipboard(HWND owner, std::string_view text) noexcept {
+    if (owner == nullptr || IsWindow(owner) == FALSE || text.empty()) {
+        return false;
+    }
+    const int units = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (units <= 0) {
+        return false;
+    }
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (static_cast<SIZE_T>(units) + 1U) * sizeof(wchar_t));
+    if (memory == nullptr) {
+        return false;
+    }
+    auto* wide = static_cast<wchar_t*>(GlobalLock(memory));
+    if (wide == nullptr) {
+        GlobalFree(memory);
+        return false;
+    }
+    (void)MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide, units);
+    wide[units] = L'\0';
+    GlobalUnlock(memory);
+    if (OpenClipboard(owner) == FALSE) {
+        GlobalFree(memory);
+        return false;
+    }
+    const bool taken = EmptyClipboard() != FALSE && SetClipboardData(CF_UNICODETEXT, memory) != nullptr;
+    CloseClipboard();
+    if (!taken) {
+        GlobalFree(memory);
+    }
+    return taken;
+}
+
 } // namespace
 
 namespace internal {
@@ -38,9 +92,9 @@ std::unique_ptr<Model> g_model;
 /** Nothing has happened yet, so the bar shows only the sync state until an apply reports. */
 constexpr const char* kIdleStatus = "";
 /** Shown when the catalog worker throws rather than reporting its own reason. */
-constexpr const char* kCatalogFailure = "Could not load the item catalog.";
+constexpr const char* kCatalogFailure = "Can't load the item catalog.";
 /** Shown when an edit escapes as an exception, which leaves the account untouched. */
-constexpr const char* kFrameFailure = "That action failed; the account is unchanged.";
+constexpr const char* kFrameFailure = "That action failed. Nothing changed.";
 /** 500 ms between account divergence checks, which copies the account to compare it. */
 constexpr std::uint64_t kDivergenceCheckIntervalMs = 500;
 /** An apply nobody was signed in for is re-offered to the game for this long. */
@@ -469,8 +523,8 @@ void retrace_edit(bool forward) noexcept {
                 state.draft->after = *draftBefore;
                 state.draft->dirty = dirtyBefore;
             }
-            state.status = forward ? "Can't write the loadouts file. Nothing redone."
-                                   : "Can't write the loadouts file. Nothing undone.";
+            state.status = forward ? "Can't write Dawn/loadouts.json. Nothing redone."
+                                   : "Can't write Dawn/loadouts.json. Nothing undone.";
             state.statusFailed = true;
             return;
         }
@@ -540,6 +594,31 @@ void reset() noexcept {
     g_model.reset();
 }
 
+bool request_copy(std::string_view text) noexcept {
+    if (text.empty() || text.size() > kCopyCapacity) {
+        return false;
+    }
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool queued = !g_clipboard.waiting;
+    if (queued) {
+        std::memcpy(g_clipboard.text.data(), text.data(), text.size());
+        g_clipboard.length = text.size();
+        g_clipboard.waiting = true;
+        g_clipboard.answered = false;
+    }
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    return queued;
+}
+
+bool take_copy_result(bool& copied) noexcept {
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool answered = g_clipboard.answered;
+    copied = g_clipboard.copied;
+    g_clipboard.answered = false;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    return answered;
+}
+
 } // namespace internal
 
 /** @return True when the Core Loadout page owns its registry slot. */
@@ -560,6 +639,31 @@ bool initialize() noexcept {
 void shutdown() noexcept {
     g_page.release(&internal::reset);
     preview::shutdown();
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    g_clipboard.waiting = false;
+    g_clipboard.answered = false;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+}
+
+void dispatch_pending_copy(HWND owner) noexcept {
+    std::array<char, kCopyCapacity> text{};
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    const bool waiting = g_clipboard.waiting;
+    const std::size_t length = g_clipboard.length;
+    if (waiting) {
+        text = g_clipboard.text;
+    }
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
+    if (!waiting) {
+        return;
+    }
+    // Windows is called with no lock held, since emptying the clipboard messages its last owner.
+    const bool copied = write_clipboard(owner, {text.data(), length});
+    AcquireSRWLockExclusive(&g_clipboard.lock);
+    g_clipboard.waiting = false;
+    g_clipboard.answered = true;
+    g_clipboard.copied = copied;
+    ReleaseSRWLockExclusive(&g_clipboard.lock);
 }
 
 /** Frame entry. An edit that throws leaves the account and the draft as they were. */
