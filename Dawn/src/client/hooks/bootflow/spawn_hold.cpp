@@ -17,6 +17,7 @@
 #include "../../hooking/call_gate.h"
 #include "../../hooking/detour.h"
 #include "internal.h"
+#include "loader_diagnostics.h"
 #include "../teleport/runtime.h"
 #include "spawn_hold_policy.h"
 
@@ -664,7 +665,60 @@ void poll_tower_recovery(state::activity::ActivityInstanceKey tower,bool hasPlay
     }
 }
 
+/** Hex of a request record's leading bytes, or "-" when the record cannot be resolved. */
+void format_request_record(std::uint32_t handle, char* output, std::size_t capacity) noexcept {
+    constexpr std::size_t kRecordBytes = 0x60;
+    if (capacity == 0U) {
+        return;
+    }
+    output[0] = '-';
+    output[(std::min)(capacity - 1U, std::size_t{1})] = '\0';
+    const std::uintptr_t record = loader_request_record(handle);
+    if (record == 0U || capacity < kRecordBytes * 2U + 1U) {
+        return;
+    }
+    std::array<std::uint8_t, kRecordBytes> bytes{};
+    __try {
+        std::memcpy(bytes.data(), reinterpret_cast<const void*>(record), bytes.size());
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return;
+    }
+    constexpr char kDigits[] = "0123456789ABCDEF";
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        output[index * 2U] = kDigits[bytes[index] >> 4U];
+        output[index * 2U + 1U] = kDigits[bytes[index] & 0xFU];
+    }
+    output[bytes.size() * 2U] = '\0';
+}
+
 } // namespace
+
+void report_loader_diagnostics(const char* reason) noexcept {
+    const LoaderObservation loader = observe_loader();
+    std::array<char, 0x60 * 2 + 1> current{};
+    std::array<char, 0x60 * 2 + 1> queued{};
+    format_request_record(loader.current.handle, current.data(), current.size());
+    format_request_record(loader.queued.handle, queued.data(), queued.size());
+    std::array<char, core::log::kLineCapacity> line{};
+    const int written = std::snprintf(
+        line.data(), line.size(),
+        "ev=stall_trace stage=loader reason=%s readable=%u busy=%u "
+        "current=%08X current_state=%u current_source=%u current_context=%u current_name=\"%s\" "
+        "queued=%08X queued_state=%u queued_source=%u queued_context=%u queued_name=\"%s\" "
+        "current_record=%s queued_record=%s",
+        reason != nullptr ? reason : "-", loader.readable ? 1U : 0U, loader.busy ? 1U : 0U,
+        loader.current.handle, static_cast<unsigned>(loader.current.state),
+        static_cast<unsigned>(loader.current.source), static_cast<unsigned>(loader.current.context),
+        loader.current.name.data(), loader.queued.handle,
+        static_cast<unsigned>(loader.queued.state), static_cast<unsigned>(loader.queued.source),
+        static_cast<unsigned>(loader.queued.context), loader.queued.name.data(), current.data(),
+        queued.data());
+    if (written > 0) {
+        core::log::write(core::log::Channel::client, core::log::Level::warn,
+                         {line.data(), (std::min)(static_cast<std::size_t>(written),
+                                                  core::log::kLineCapacity - 1U)});
+    }
+}
 
 /**
  * An early native spawn ends the spawn-gate calls before in-world arms its final fade.

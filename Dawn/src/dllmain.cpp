@@ -3,6 +3,7 @@
 #include <intrin.h>
 
 #include "client/hooks/egress/runtime.h"
+#include "client/hooks/probes/stall_probe/stall_probe.h"
 #include "core/runtime/core_runtime.h"
 #include "steam/runtime/internal.h"
 #include "steam/runtime/runtime.h"
@@ -46,6 +47,8 @@ extern "C" __declspec(dllexport) void SteamAPI_Shutdown() noexcept {
 
 /** Delivers one batch of callbacks on the caller thread. */
 extern "C" __declspec(dllexport) void SteamAPI_RunCallbacks() noexcept {
+    // One relaxed increment; the stall probe reads it to tell a frozen pump from a quiet one.
+    dawn::client::hooks::probes::stall_probe::note_pump();
     dawn::steam::run_callbacks();
 }
 
