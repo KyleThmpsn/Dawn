@@ -515,6 +515,8 @@ struct Title {
     bool badged{};
     /** Element the second figure belongs to, which tints it and gives it its glyph. */
     edit::Element badgeElement{edit::Element::none};
+    /** Element a weapon deals as it stands, which tints its figure and gives it its glyph. */
+    edit::Element element{edit::Element::none};
     std::string label;
     /** Stat row the title consumed, or `kNoTitleRow` when it consumed none. */
     std::size_t consumed{kNoTitleRow};
@@ -542,6 +544,8 @@ struct Title {
         // granted at, which the grant controls set; the rest of the row is the definition's own.
         const bool catalogEntry = owned == nullptr || owned->instanceSoid == 0;
         title.value = catalogEntry ? internal::model().grant.power : internal::power_of(owned->level);
+        // An older weapon deals the element of the plug fitted to it, so the instance is asked.
+        title.element = edit::item_element(definition, owned, internal::model().catalog);
         if (definition.ammo != edit::Ammo::none) {
             title.label = definition.ammo == edit::Ammo::primary   ? "PRIMARY"
                           : definition.ammo == edit::Ammo::special ? "SPECIAL"
@@ -664,8 +668,8 @@ void draw_power(const edit::CatalogItem& definition, const Title& title) noexcep
     const ImVec2 lifted = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos({lifted.x, lifted.y - pixels(kPowerTopTrim)});
     const float size = ImGui::GetStyle().FontSizeBase * kPowerScale;
-    const bool elemental = definition.element != edit::Element::none;
-    const ElementMark mark = element_mark(definition.element);
+    const bool elemental = title.element != edit::Element::none;
+    const ElementMark mark = element_mark(title.element);
     const ImVec4 tint = elemental ? mark.tint : ImGui::GetStyleColorVec4(ImGuiCol_Text);
 
     // The game sets power in a heavier weight than anything else on the tooltip.

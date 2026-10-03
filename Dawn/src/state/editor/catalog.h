@@ -107,8 +107,13 @@ struct CatalogItem {
     std::uint32_t iconTag{};
     /** Stat group whose curves display this item's stored stat values. */
     std::uint16_t statGroupIndex{kNoStatGroup};
-    /** Element this weapon deals, decoded from the sandbox perks it carries. */
+    /**
+     * Element this weapon deals, decoded from the sandbox perks it carries, or, for an older weapon
+     * that carries none and takes its element from a plug, from the plugs it comes with.
+     */
     Element element{Element::none};
+    /** The element is the plug's rather than the weapon's own, so a different plug fitted changes it. */
+    bool elementFromPlug{};
     Ammo ammo{Ammo::none};
     /**
      * Stat row the item's stat block names as its primary, or `kNoStatRow`.

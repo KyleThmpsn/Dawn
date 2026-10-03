@@ -184,6 +184,22 @@ void Catalog::finish() {
             plugs.insert(plugs.end(), pool.begin(), pool.end());
         }
     }
+    // An older weapon carries no damage marker of its own and takes its element from a plug it comes
+    // with, as Sundial reads it. Plugs naming different elements make a weapon that switches, so it
+    // keeps none.
+    for (auto& item : items) {
+        if (item.kind != GearKind::weapon || item.element != Element::none) continue;
+        Element plugged = Element::none;
+        bool mixed = false;
+        for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane) {
+            const CatalogItem* plug = item.detail.initialPlugIndices[lane] != build_data::items::details::kUnavailableItemIndex
+                ? index(item.detail.initialPlugIndices[lane]) : nullptr;
+            if (plug == nullptr || plug->element == Element::none) continue;
+            mixed = mixed || (plugged != Element::none && plugged != plug->element);
+            plugged = plug->element;
+        }
+        if (!mixed && plugged != Element::none) { item.element = plugged; item.elementFromPlug = true; }
+    }
     for (auto& [key, values] : socketPools) { (void)key; unique(values); }
     // Shaders are shared across weapon families. A family whose stock items have no shader socket still
     // takes the installed shaders there, without being handed another family's traits.

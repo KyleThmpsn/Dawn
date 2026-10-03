@@ -217,7 +217,7 @@ bool passes(const Query& query, const edit::CatalogItem& definition, const edit:
     if ((!query.words.empty() && !edit::matches(definition, query.words))
         || (query.tier >= 0 && definition.definition.tier != query.tier)
         || (query.kinded && definition.kind != query.kind)
-        || (query.elemented && definition.element != query.element)) {
+        || (query.elemented && edit::item_element(definition, item, model().catalog) != query.element)) {
         return false;
     }
     if (item == nullptr) {
