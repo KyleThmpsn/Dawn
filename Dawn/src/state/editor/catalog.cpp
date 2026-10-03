@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <unordered_set>
 
 namespace dawn::state::editor {
 /** @return The curve for one stat row inside a group, or null when the group does not scale it. */
@@ -103,14 +104,43 @@ const CatalogItem* Catalog::index(std::uint16_t id) const noexcept {
     return it == indices.end() ? nullptr : &items[it->second];
 }
 namespace {
+/** The socket type a weapon's shader sits in, and the one cosmetic socket type whose pools name no marker. */
+constexpr std::uint32_t kShaderSocketType = 180;
+constexpr std::uint32_t kUnmarkedCosmeticSocketType = 746;
 void unique(std::vector<std::uint16_t>& values) {
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
 }
+/** @return The subtype the scopes group an item by: what the game names it, such as Auto Rifle, or else its bucket. */
+std::string item_subtype(const CatalogItem& item) {
+    return item.type.empty() ? "Bucket " + std::to_string(item.definition.bucketId) : item.type;
+}
+/** @return The type the widest gear scope groups an item by: every weapon, every armor piece, or else its bucket. */
+std::uint64_t item_type(const CatalogItem& item) {
+    constexpr std::uint64_t kKind = 1ULL << 32U;
+    return item.kind == GearKind::weapon ? kKind | 1U : item.kind == GearKind::armor ? kKind | 2U : item.definition.bucketId;
+}
+/**
+ * @return True for a plug that only dresses an item: a shader, ornament, transmat or projection, which
+ * the catalog files as cosmetic by its type, a tracker, or one of the defaults a cosmetic socket holds.
+ */
+bool cosmetic_plug(const CatalogItem& plug) {
+    return plug.kind == GearKind::cosmetic || plug.name == "Default Shader" || plug.name == "Default Ornament"
+        || plug.name == "Tracker Disabled" || plug.name.find("Kill Tracker") != std::string::npos
+        || searchable(plug.type).find("tracker") != std::string::npos;
+}
+/** @return True when one of an item's sockets is cosmetic: it offers a cosmetic plug, or its type is the cosmetic one that names none. */
+bool cosmetic_lane(const Catalog& catalog, const CatalogItem& item, std::size_t lane) {
+    if (item.detail.socketTypes[lane] == kUnmarkedCosmeticSocketType) return true;
+    return std::any_of(item.compatible[lane].begin(), item.compatible[lane].end(), [&catalog](std::uint16_t id) {
+        const CatalogItem* plug = catalog.index(id);
+        return plug != nullptr && cosmetic_plug(*plug);
+    });
+}
 }
 void Catalog::finish() {
-    hashes.clear(); indices.clear(); socketPools.clear(); plugs.clear();
-    for (auto& pool : gearPools) pool.clear();
+    hashes.clear(); indices.clear(); socketPools.clear(); subtypeSocketPools.clear(); subtypePools.clear(); typePools.clear();
+    plugs.clear();
     for (std::size_t i = 0; i < items.size(); ++i) {
         auto& item = items[i];
         hashes[item.definition.definitionHash] = i;
@@ -123,24 +153,46 @@ void Catalog::finish() {
         if (item.name.empty()) { item.unnamed = true; item.name = std::string(item.plug ? "Unnamed perk " : "Unnamed item ") + hash; }
         item.search = searchable(item.name + " " + item.type + " " + item.description + " " + hash);
         if (item.plug) plugs.push_back(item.definition.definitionIndex);
+        for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane) unique(item.compatible[lane]);
+    }
+    // A cosmetic socket's plugs stay out of the gear pools, so a weapon's gear scope does not fill with
+    // every shader, ornament and tracker in the game. A cosmetic socket draws on them still.
+    std::unordered_set<std::uint16_t> cosmetic;
+    for (const auto& item : items)
+        for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane)
+            if (cosmetic_lane(*this, item, lane)) cosmetic.insert(item.compatible[lane].begin(), item.compatible[lane].end());
+    for (const auto& item : items) {
+        const std::string subtype = item_subtype(item);
+        auto& sameSubtype = subtypePools[subtype];
+        auto& sameType = typePools[item_type(item)];
         for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane) {
-            auto& pool = item.compatible[lane];
-            unique(pool);
+            const auto& pool = item.compatible[lane];
             const auto type = item.detail.socketTypes[lane];
             if (type != build_data::items::details::kUnavailableSocketType) {
                 auto& socket = socketPools[type];
                 socket.insert(socket.end(), pool.begin(), pool.end());
-                auto& combined = socketPools[0x10000U + (static_cast<std::uint32_t>(item.kind) << 16U) + type];
+                auto& combined = subtypeSocketPools[{subtype, type}];
                 combined.insert(combined.end(), pool.begin(), pool.end());
             }
-            auto& gear = gearPools[static_cast<std::size_t>(item.kind)];
-            gear.insert(gear.end(), pool.begin(), pool.end());
+            for (const auto id : pool) {
+                if (!cosmetic.contains(id)) {
+                    sameSubtype.push_back(id);
+                    sameType.push_back(id);
+                }
+            }
+            // Pools also expose unnamed/internal plugs that declare no category of their own.
+            plugs.insert(plugs.end(), pool.begin(), pool.end());
         }
     }
     for (auto& [key, values] : socketPools) { (void)key; unique(values); }
-    for (auto& pool : gearPools) unique(pool);
-    // Pools also expose unnamed/internal plugs that declare no category of their own.
-    for (const auto& pool : gearPools) plugs.insert(plugs.end(), pool.begin(), pool.end());
+    // Shaders are shared across weapon families. A family whose stock items have no shader socket still
+    // takes the installed shaders there, without being handed another family's traits.
+    if (const auto shaders = socketPools.find(kShaderSocketType); shaders != socketPools.end() && !shaders->second.empty())
+        for (const auto& item : items)
+            if (item.kind == GearKind::weapon) (void)subtypeSocketPools.try_emplace({item_subtype(item), kShaderSocketType}, shaders->second);
+    for (auto& [key, values] : subtypeSocketPools) { (void)key; unique(values); }
+    for (auto& [key, values] : subtypePools) { (void)key; unique(values); }
+    for (auto& [key, values] : typePools) { (void)key; unique(values); }
     unique(plugs);
     for (auto id : plugs) if (auto it = indices.find(id); it != indices.end()) items[it->second].plug = true;
 }
@@ -148,12 +200,28 @@ std::vector<std::uint16_t> Catalog::candidates(const CatalogItem& item, std::siz
     if (lane >= item.detail.ordinarySocketCount || lane >= item.compatible.size()) return {};
     if (scope == PlugScope::all) return plugs;
     if (scope == PlugScope::compatible) return item.compatible[lane];
-    if (scope == PlugScope::gear) return gearPools[static_cast<std::size_t>(item.kind)];
     const auto type = item.detail.socketTypes[lane];
-    if (type == build_data::items::details::kUnavailableSocketType) return item.compatible[lane];
-    const auto key = scope == PlugScope::socket ? type
-        : 0x10000U + (static_cast<std::uint32_t>(item.kind) << 16U) + type;
-    const auto it = socketPools.find(key);
-    return it == socketPools.end() ? std::vector<std::uint16_t>{} : it->second;
+    const bool typed = type != build_data::items::details::kUnavailableSocketType;
+    if (scope == PlugScope::subtype || scope == PlugScope::itemType) {
+        std::vector<std::uint16_t> options;
+        if (scope == PlugScope::subtype) {
+            if (const auto same = subtypePools.find(item_subtype(item)); same != subtypePools.end()) options = same->second;
+        } else if (const auto same = typePools.find(item_type(item)); same != typePools.end()) {
+            options = same->second;
+        }
+        // A cosmetic socket keeps the cosmetics its own type offers, which the gear pools leave out.
+        if (const auto socket = socketPools.find(type); typed && socket != socketPools.end() && cosmetic_lane(*this, item, lane)) {
+            options.insert(options.end(), socket->second.begin(), socket->second.end());
+            unique(options);
+        }
+        return options;
+    }
+    if (!typed) return item.compatible[lane];
+    if (scope == PlugScope::socket) {
+        const auto it = socketPools.find(type);
+        return it == socketPools.end() ? std::vector<std::uint16_t>{} : it->second;
+    }
+    const auto it = subtypeSocketPools.find({item_subtype(item), type});
+    return it == subtypeSocketPools.end() ? std::vector<std::uint16_t>{} : it->second;
 }
 } // namespace dawn::state::editor

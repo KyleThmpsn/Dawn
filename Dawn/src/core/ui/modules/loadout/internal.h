@@ -238,8 +238,8 @@ struct Grant {
 /** Perk picker state while it is open over one socket lane. */
 struct SocketPicker {
     std::size_t lane{};
-    /** Opens one step past the native pool: the socket's type across this gear type. */
-    edit::PlugScope scope{edit::PlugScope::socketAndGear};
+    /** Opens one step past the native pool: the socket's type across the item's subtype. */
+    edit::PlugScope scope{edit::PlugScope::socketAndSubtype};
     std::vector<std::uint16_t> options;
     char search[kSearchCapacity]{};
     /** Filters over the offered plugs: a plug type or empty for all, a tier or zero for all. */

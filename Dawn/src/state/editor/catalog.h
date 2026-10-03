@@ -3,9 +3,11 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "../account/account_state.h"
 #include "../build_data/items/item_catalog.h"
@@ -13,7 +15,14 @@
 
 namespace dawn::state::editor {
 enum class GearKind { other, weapon, armor, cosmetic, subclass };
-enum class PlugScope { compatible, socketAndGear, socket, gear, all };
+/**
+ * How widely the perk picker looks for plugs, narrowest first: the socket's own pool; that socket
+ * type on items of the same subtype, such as Auto Rifle or Helmet; that socket type on any item; any
+ * socket on items of the same subtype; any socket on items of the same type, such as every weapon or
+ * every armor piece; and every plug. The two widest gear scopes leave cosmetics to cosmetic sockets.
+ * They follow Sundial's Item Subtype and Item Type.
+ */
+enum class PlugScope { compatible, socketAndSubtype, socket, subtype, itemType, all };
 struct AbilityChoice { std::uint8_t entry{}; std::string name; };
 struct SubclassPath { std::string name; std::uint8_t super{}, melee{}; std::vector<std::string> perks; };
 /** One authored point on a stat's display curve: a stored value and what the game shows for it. */
@@ -116,8 +125,14 @@ struct Catalog {
     std::vector<CatalogItem> items;
     std::unordered_map<std::uint32_t, std::size_t> hashes;
     std::unordered_map<std::uint16_t, std::size_t> indices;
+    /** Every plug any item offers in a socket of one type, by socket type. */
     std::unordered_map<std::uint32_t, std::vector<std::uint16_t>> socketPools;
-    std::array<std::vector<std::uint16_t>, 5> gearPools;
+    /** Every plug items of one subtype offer in a socket of one type, by subtype and socket type. */
+    std::map<std::pair<std::string, std::uint32_t>, std::vector<std::uint16_t>> subtypeSocketPools;
+    /** Every plug, cosmetics aside, that items of one subtype offer in any socket, by subtype. */
+    std::unordered_map<std::string, std::vector<std::uint16_t>> subtypePools;
+    /** Every plug, cosmetics aside, that items of one type offer in any socket, by type. */
+    std::unordered_map<std::uint64_t, std::vector<std::uint16_t>> typePools;
     std::vector<std::uint16_t> plugs;
     std::array<std::uint8_t, 6> statRows{};
     /** Installed stat groups, indexed by `CatalogItem::statGroupIndex`. */
