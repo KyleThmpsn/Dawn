@@ -77,8 +77,10 @@ struct StatGroup {
     std::vector<ScaledStat> scaled;
 };
 
-/** Elements a weapon can deal. The installed build carries Arc, Solar and Void. */
-enum class Element : std::uint8_t { none, arc, solar, void_ };
+/** Damage types a weapon can deal, with none for Kinetic. The installed build carries Arc, Solar and Void. */
+enum class DamageType : std::uint8_t { none, arc, solar, void_ };
+/** The energy type an armor piece holds, as Bungie names it. The installed build carries Arc, Solar and Void. */
+enum class EnergyType : std::uint8_t { none, arc, solar, void_ };
 /** The ammunition a weapon draws, as the client classifies it. Non-weapons carry none. */
 enum class Ammo : std::uint8_t { none, primary, special, heavy };
 
@@ -108,12 +110,12 @@ struct CatalogItem {
     /** Stat group whose curves display this item's stored stat values. */
     std::uint16_t statGroupIndex{kNoStatGroup};
     /**
-     * Element this weapon deals, decoded from the sandbox perks it carries, or, for an older weapon
-     * that carries none and takes its element from a plug, from the plugs it comes with.
+     * Damage type this weapon deals, decoded from the sandbox perks it carries, or, for an older
+     * weapon that carries none and takes its damage type from a plug, from the plugs it comes with.
      */
-    Element element{Element::none};
-    /** The element is the plug's rather than the weapon's own, so a different plug fitted changes it. */
-    bool elementFromPlug{};
+    DamageType damageType{DamageType::none};
+    /** The damage type is the plug's rather than the weapon's own, so a different plug fitted changes it. */
+    bool damageTypeFromPlug{};
     Ammo ammo{Ammo::none};
     /**
      * Stat row the item's stat block names as its primary, or `kNoStatRow`.
@@ -223,10 +225,10 @@ struct Catalog {
                                 std::uint16_t statRow) noexcept;
 
 /**
- * @return The element one item deals, or none when it carries no damage marker.
+ * @return The damage type one item deals, or none when it carries no damage marker.
  * @param detail Item detail carrying the sandbox perk list.
  */
-[[nodiscard]] Element element_of(const build_data::items::details::Definition& detail) noexcept;
+[[nodiscard]] DamageType damage_type_of(const build_data::items::details::Definition& detail) noexcept;
 
 std::string searchable(std::string value);
 bool matches(const CatalogItem& item, const std::string& query);

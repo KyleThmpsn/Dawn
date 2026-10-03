@@ -50,28 +50,28 @@ bool numeric_stat(const Catalog& catalog, std::uint16_t groupIndex, std::uint16_
 }
 
 /**
- * @return The element one item deals, or none when it carries no damage marker.
- * The installed build marks a weapon's element with a sandbox perk rather than a field. Six
+ * @return The damage type one item deals, or none when it carries no damage marker.
+ * The installed build marks a weapon's damage type with a sandbox perk rather than a field. Six
  * indices name the fixed markers: an older trio and the one the modern sandbox uses. A weapon
- * carrying markers for more than one element switches at runtime, so it reports none.
+ * carrying markers for more than one damage type switches at runtime, so it reports none.
  * @param detail Item detail carrying the sandbox perk list.
  */
-Element element_of(const build_data::items::details::Definition& detail) noexcept {
+DamageType damage_type_of(const build_data::items::details::Definition& detail) noexcept {
     constexpr std::uint16_t kLegacyArc = 83, kLegacySolar = 84, kLegacyVoid = 85;
     constexpr std::uint16_t kModernArc = 449, kModernSolar = 450, kModernVoid = 451;
-    Element found = Element::none;
+    DamageType found = DamageType::none;
     const std::size_t count = (std::min)(static_cast<std::size_t>(detail.sandboxPerkCount),
                                          detail.sandboxPerks.size());
     for (std::size_t i = 0; i < count; ++i) {
-        Element marker = Element::none;
+        DamageType marker = DamageType::none;
         switch (detail.sandboxPerks[i]) {
-        case kLegacyArc: case kModernArc: marker = Element::arc; break;
-        case kLegacySolar: case kModernSolar: marker = Element::solar; break;
-        case kLegacyVoid: case kModernVoid: marker = Element::void_; break;
+        case kLegacyArc: case kModernArc: marker = DamageType::arc; break;
+        case kLegacySolar: case kModernSolar: marker = DamageType::solar; break;
+        case kLegacyVoid: case kModernVoid: marker = DamageType::void_; break;
         default: continue;
         }
-        // Two markers naming different elements mean the weapon chooses at runtime.
-        if (found != Element::none && found != marker) return Element::none;
+        // Two markers naming different damage types mean the weapon chooses at runtime.
+        if (found != DamageType::none && found != marker) return DamageType::none;
         found = marker;
     }
     return found;
@@ -184,21 +184,21 @@ void Catalog::finish() {
             plugs.insert(plugs.end(), pool.begin(), pool.end());
         }
     }
-    // An older weapon carries no damage marker of its own and takes its element from a plug it comes
-    // with, as Sundial reads it. Plugs naming different elements make a weapon that switches, so it
-    // keeps none.
+    // An older weapon carries no damage marker of its own and takes its damage type from a plug it
+    // comes with, as Sundial reads it. Plugs naming different damage types make a weapon that
+    // switches, so it keeps none.
     for (auto& item : items) {
-        if (item.kind != GearKind::weapon || item.element != Element::none) continue;
-        Element plugged = Element::none;
+        if (item.kind != GearKind::weapon || item.damageType != DamageType::none) continue;
+        DamageType plugged = DamageType::none;
         bool mixed = false;
         for (std::size_t lane = 0; lane < item.detail.ordinarySocketCount; ++lane) {
             const CatalogItem* plug = item.detail.initialPlugIndices[lane] != build_data::items::details::kUnavailableItemIndex
                 ? index(item.detail.initialPlugIndices[lane]) : nullptr;
-            if (plug == nullptr || plug->element == Element::none) continue;
-            mixed = mixed || (plugged != Element::none && plugged != plug->element);
-            plugged = plug->element;
+            if (plug == nullptr || plug->damageType == DamageType::none) continue;
+            mixed = mixed || (plugged != DamageType::none && plugged != plug->damageType);
+            plugged = plug->damageType;
         }
-        if (!mixed && plugged != Element::none) { item.element = plugged; item.elementFromPlug = true; }
+        if (!mixed && plugged != DamageType::none) { item.damageType = plugged; item.damageTypeFromPlug = true; }
     }
     for (auto& [key, values] : socketPools) { (void)key; unique(values); }
     // Shaders are shared across weapon families. A family whose stock items have no shader socket still
