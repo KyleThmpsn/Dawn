@@ -81,6 +81,8 @@ struct StatGroup {
 enum class DamageType : std::uint8_t { none, arc, solar, void_ };
 /** The energy type an armor piece holds, as Bungie names it. The installed build carries Arc, Solar and Void. */
 enum class EnergyType : std::uint8_t { none, arc, solar, void_ };
+/** The installed bucket mods are stocked in, as stacks like the materials but socketed as perks are. */
+inline constexpr std::uint8_t kModBucketId = 37;
 /** The ammunition a weapon draws, as the client classifies it. Non-weapons carry none. */
 enum class Ammo : std::uint8_t { none, primary, special, heavy };
 
@@ -107,6 +109,8 @@ struct CatalogItem {
      */
     bool inert{};
     std::uint32_t iconTag{};
+    /** An emblem's nameplate: the icon container whose primary layer is its 474 by 96 banner. */
+    std::uint32_t nameplateTag{};
     /** Stat group whose curves display this item's stored stat values. */
     std::uint16_t statGroupIndex{kNoStatGroup};
     /**
@@ -233,6 +237,11 @@ struct Catalog {
 std::string searchable(std::string value);
 bool matches(const CatalogItem& item, const std::string& query);
 bool fits_class(const CatalogItem& item, CharacterClass characterClass) noexcept;
+/**
+ * @return True for something that only dresses: a shader, ornament, transmat, projection, emote,
+ * emblem, aura, glow, clan staff or tracker, or a default a cosmetic socket holds.
+ */
+[[nodiscard]] bool cosmetic(const CatalogItem& item) noexcept;
 // Runs on the editor's worker. No game assets or online manifest are bundled.
 bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& progress, std::string& error);
 /**

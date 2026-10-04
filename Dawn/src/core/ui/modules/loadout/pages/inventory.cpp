@@ -377,11 +377,9 @@ void lock_picked(bool lock) noexcept {
  */
 void send_picked(std::size_t target) noexcept {
     Model& state = model();
-    const state::CharacterClass targetClass = state.draft->after.characters[target].characterClass;
     std::size_t sent = 0;
     std::size_t equipped = 0;
     std::size_t postmaster = 0;
-    std::size_t otherClass = 0;
     std::size_t noRoom = 0;
     std::vector<std::uint64_t> stayed;
     const std::vector<std::uint64_t> picked = state.picked;
@@ -391,10 +389,7 @@ void send_picked(std::size_t target) noexcept {
         if (item == nullptr || definition == nullptr) {
             continue;
         }
-        std::size_t* reason = is_equipped(instance) ? &equipped
-                              : item->postmaster     ? &postmaster
-                              : !edit::fits_class(*definition, targetClass) ? &otherClass
-                                                                            : nullptr;
+        std::size_t* reason = is_equipped(instance) ? &equipped : item->postmaster ? &postmaster : nullptr;
         std::string refused;
         if (reason == nullptr && !edit::transfer(*state.draft, state.catalog, state.character, target, instance, refused)) {
             reason = &noRoom;
@@ -421,7 +416,6 @@ void send_picked(std::size_t target) noexcept {
     };
     note(equipped, equipped == 1 ? "is equipped" : "are equipped");
     note(postmaster, postmaster == 1 ? "is at the Postmaster" : "are at the Postmaster");
-    note(otherClass, otherClass == 1 ? "belongs to another class" : "belong to another class");
     note(noRoom, "did not fit there");
     report_bulk(message, sent != 0);
     model().statusFailed = sent == 0;
@@ -718,8 +712,7 @@ void run_bulk(const Bulk& bulk) noexcept {
             const bool fits = std::any_of(state.picked.begin(), state.picked.end(), [&](std::uint64_t instance) {
                 const edit::Item* item = find_owned_item(instance);
                 const edit::CatalogItem* definition = item != nullptr ? state.catalog.find(item->definitionHash) : nullptr;
-                return definition != nullptr && !item->postmaster && !is_equipped(instance)
-                       && edit::fits_class(*definition, account.characters[c].characterClass);
+                return definition != nullptr && !item->postmaster && !is_equipped(instance);
             });
             ImGui::SameLine();
             ImGui::PushID(static_cast<int>(c));
@@ -729,7 +722,7 @@ void run_bulk(const Bulk& bulk) noexcept {
             }
             ImGui::EndDisabled();
             if (!fits && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("None can go there: equipped, at the Postmaster or the wrong class.");
+                ImGui::SetTooltip("None can go there: each is equipped or at the Postmaster.");
             }
             ImGui::PopID();
         }
@@ -1493,7 +1486,7 @@ void draw_profile_items() noexcept {
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     draw_count(shown, held, "Stack", "Stacks");
-    draw_add_action(Category::materials, -1);
+    draw_add_action(Category::other, -1);
 
     if (!ImGui::BeginChild("profile_items")) {
         ImGui::EndChild();

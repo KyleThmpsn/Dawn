@@ -163,8 +163,8 @@ enum class Category : std::uint8_t {
     armor,
     cosmetics,
     perks,
-    /** Account stacks: materials, currencies and consumables, which belong to no slot. */
-    materials,
+    /** Whatever the other tabs leave: materials, currencies, consumables and subclasses. */
+    other,
     count,
 };
 
@@ -193,12 +193,14 @@ struct Browse {
     Sort sort{Sort::type};
     /** Zero shows every rarity; otherwise only this tier. */
     int rarity{};
-    bool classOnly{true};
+    bool classOnly{};
     bool includeInternal{};
     /** Equipment slot the results are narrowed to, or -1 for every slot. A swap sets its own. */
     int slot{-1};
     /** Damage type weapons are narrowed to, as an `edit::DamageType` value, or -1 for every one. */
     int damageType{-1};
+    /** Ammunition weapons are narrowed to, as an `edit::Ammo` value, or -1 for every one. */
+    int ammo{-1};
     /** `armorClass` value that follows the class of the character in play, which is where it starts. */
     static constexpr int kOwnClass = -2;
     /**
@@ -213,8 +215,9 @@ struct Browse {
     /** @return Number of filters narrowing the results beyond the defaults. */
     [[nodiscard]] int narrowing() const noexcept {
         const bool armor = category == Category::armor;
-        return (rarity != 0 ? 1 : 0) + (classOnly || armor ? 0 : 1) + (includeInternal ? 1 : 0)
+        return (rarity != 0 ? 1 : 0) + (!classOnly || armor ? 0 : 1) + (includeInternal ? 1 : 0)
                + (slot >= 0 ? 1 : 0) + (damageType >= 0 && category == Category::weapons ? 1 : 0)
+               + (ammo >= 0 && category == Category::weapons ? 1 : 0)
                + (armorClass != kOwnClass && armor ? 1 : 0);
     }
 };

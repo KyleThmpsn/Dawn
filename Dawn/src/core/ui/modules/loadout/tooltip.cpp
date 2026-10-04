@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <imgui.h>
 
@@ -274,6 +275,41 @@ void rule() noexcept {
     frame_span(left, right);
     const float y = ImGui::GetCursorScreenPos().y;
     ImGui::GetWindowDrawList()->AddLine({left, y}, {right, y}, ImGui::GetColorU32(kRuleColor));
+}
+
+/**
+ * Draws an emblem's nameplate banner across the whole tooltip under its band, edge to edge as the
+ * game sets it. The banner is the nameplate's primary layer; the others are the overlay and the wide
+ * background the roster draws, which are left out.
+ */
+void draw_nameplate(std::uint32_t tag) noexcept {
+    constexpr const char* kBannerRole = "Icon";
+    // Stock banners are 474 by 96; the room is kept at that shape until the artwork is in.
+    float texelsWide = 474.0F;
+    float texelsHigh = 96.0F;
+    int banner = -1;
+    preview::LayerDetails layer{};
+    for (unsigned i = 0; preview::layer_details(tag, i, layer); ++i) {
+        if (layer.role != nullptr && std::string_view(layer.role) == kBannerRole && layer.width != 0 && layer.height != 0) {
+            banner = static_cast<int>(i);
+            texelsWide = static_cast<float>(layer.width);
+            texelsHigh = static_cast<float>(layer.height);
+            break;
+        }
+    }
+    // A little room keeps the banner off the band over it.
+    ImGui::Dummy({0.0F, pixels(kBlockGap)});
+    float left = 0.0F;
+    float right = 0.0F;
+    frame_span(left, right);
+    // The banner is set at its own shape across the whole width, so it meets both edges.
+    const float texel = (right - left) / texelsWide;
+    const float height = texelsHigh * texel;
+    const ImVec2 at{left, ImGui::GetCursorScreenPos().y};
+    // Until the artwork is in, the draw only asks for it, unseen.
+    (void)preview::draw_fitted(tag, at, {right - left, height}, texel, 1.0F,
+                               banner >= 0 ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 0), banner);
+    ImGui::Dummy({0.0F, height});
 }
 
 /** @return True when one plug is the item's intrinsic frame, which the game sets on a panel. */
@@ -1364,6 +1400,9 @@ void draw_summary(const edit::CatalogItem& definition,
               pixels(kBandHeight),
               1.0F,
               masterworked(definition, owned));
+    if (definition.nameplateTag != 0) {
+        draw_nameplate(definition.nameplateTag);
+    }
     if (!definition.description.empty()) {
         // The flavour text leads, ruled off from the figures and rows that follow it. An item that
         // carries nothing but its description has nothing to be ruled off from.

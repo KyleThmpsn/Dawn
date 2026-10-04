@@ -120,23 +120,22 @@ std::uint64_t item_type(const CatalogItem& item) {
     constexpr std::uint64_t kKind = 1ULL << 32U;
     return item.kind == GearKind::weapon ? kKind | 1U : item.kind == GearKind::armor ? kKind | 2U : item.definition.bucketId;
 }
-/**
- * @return True for a plug that only dresses an item: a shader, ornament, transmat or projection, which
- * the catalog files as cosmetic by its type, a tracker, or one of the defaults a cosmetic socket holds.
- */
-bool cosmetic_plug(const CatalogItem& plug) {
-    return plug.kind == GearKind::cosmetic || plug.name == "Default Shader" || plug.name == "Default Ornament"
-        || plug.name == "Tracker Disabled" || plug.name.find("Kill Tracker") != std::string::npos
-        || searchable(plug.type).find("tracker") != std::string::npos;
-}
 /** @return True when one of an item's sockets is cosmetic: it offers a cosmetic plug, or its type is the cosmetic one that names none. */
 bool cosmetic_lane(const Catalog& catalog, const CatalogItem& item, std::size_t lane) {
     if (item.detail.socketTypes[lane] == kUnmarkedCosmeticSocketType) return true;
     return std::any_of(item.compatible[lane].begin(), item.compatible[lane].end(), [&catalog](std::uint16_t id) {
         const CatalogItem* plug = catalog.index(id);
-        return plug != nullptr && cosmetic_plug(*plug);
+        return plug != nullptr && cosmetic(*plug);
     });
 }
+}
+bool cosmetic(const CatalogItem& item) noexcept {
+    if (item.kind == GearKind::cosmetic || item.name == "Default Shader" || item.name == "Default Ornament"
+        || item.name == "Restore Defaults" || item.name == "Tracker Disabled") return true;
+    const std::string type = searchable(item.type);
+    for (const char* word : {"ornament", "shader", "transmat", "projection", "emote", "emblem", "aura", "glow", "clan staff", "tracker"})
+        if (type.find(word) != std::string::npos) return true;
+    return false;
 }
 void Catalog::finish() {
     hashes.clear(); indices.clear(); socketPools.clear(); subtypeSocketPools.clear(); subtypePools.clear(); typePools.clear();

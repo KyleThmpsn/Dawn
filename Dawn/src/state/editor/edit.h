@@ -120,7 +120,7 @@ struct LoadoutResult {
     std::size_t brought{};
     /** Pieces held whose saved level or plugs were put back. */
     std::size_t refitted{};
-    /** Pieces skipped: gone from the build, not this class's, at the postmaster, or without room. */
+    /** Pieces skipped: gone from the build, at the postmaster, or without room. */
     std::size_t unavailable{};
     /**
      * The copy each slot's piece turned out to be where that is not the copy saved, one made again or
@@ -137,11 +137,11 @@ enum class PieceState : std::uint8_t {
     /** Held and stowed, so equipping the loadout puts it on. */
     stowed,
     /**
-     * The account holds no copy of the item any longer, but the build still carries it and this
-     * class can hold it, so equipping the loadout makes it again.
+     * The account holds no copy of the item any longer, but the build still carries it, so equipping
+     * the loadout makes it again.
      */
     missing,
-    /** Gone from the build, not this class's, or waiting at the postmaster. */
+    /** Gone from the build or waiting at the postmaster. */
     unavailable,
 };
 /** Where one saved piece stands, and the copy of it equipping the loadout would put on. */

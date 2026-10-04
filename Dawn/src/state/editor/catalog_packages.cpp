@@ -617,6 +617,10 @@ bool load_catalog(Catalog& output, std::atomic_bool& cancel, std::atomic_uint& p
             std::uint16_t icon{};
             if (strings::read(std::span<const std::byte>(itemStrings), 0x80, icon) && icon < iconRows.count)
                 (void)strings::read(std::span<const std::byte>(iconTable), iconRows.dataOffset + icon * 0x18 + 0x10, item.iconTag);
+            // An emblem's strings name a second icon row, its nameplate, as Sundial reads it.
+            if (item.slot == static_cast<std::size_t>(account::inventory::EquipmentSlot::emblem)
+                && strings::read(std::span<const std::byte>(itemStrings), 0x82, icon) && icon < iconRows.count)
+                (void)strings::read(std::span<const std::byte>(iconTable), iconRows.dataOffset + icon * 0x18 + 0x10, item.nameplateTag);
         }
         // An ornament may reuse a weapon/armor bucket; it belongs in cosmetics and the perk picker.
         const auto type = searchable(item.type);
