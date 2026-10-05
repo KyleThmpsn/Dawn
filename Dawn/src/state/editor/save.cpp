@@ -21,6 +21,8 @@ using Selection_t = build_data::abilities::Selection;
 
 /** Slot 11 carries the subclass, which is the only equipment an ability row depends on. */
 constexpr std::size_t kSubclassSlot = 11;
+/** The stock subclasses' socket entry lists, whose every standard pick Dawn builds a row for at start. */
+constexpr std::array<std::uint16_t, 9> kStockSubclassLists{1, 2, 3, 5, 6, 7, 9, 10, 11};
 namespace reader = middleware::content::packages::reader;
 namespace tables = middleware::content::packages::tables;
 
@@ -75,14 +77,19 @@ std::vector<std::pair<std::uint16_t, Selection_t>> g_unbuildable;
  */
 bool needed(const AccountState& account, const Catalog& catalog, std::vector<Need>& output) {
     output.clear();
+    // Every equipped row comes before any stowed one, so the stowed ones never take the room an
+    // equipped one needs.
     for (std::size_t i = 0; i < account.characterCount; ++i) {
         const CharacterState& character = account.characters[i];
-        const Selection_t selection = ability_selection(character);
         if (const auto& subclass = character.equipment.slots[kSubclassSlot]) {
             const auto* item = catalog.find(subclass->definitionHash);
             if (!item) return false;
-            output.push_back({item, selection, true});
+            output.push_back({item, ability_selection(character), true});
         }
+    }
+    for (std::size_t i = 0; i < account.characterCount; ++i) {
+        const CharacterState& character = account.characters[i];
+        const Selection_t selection = ability_selection(character);
         for (std::size_t j = 0; j < character.inventory.count; ++j) {
             const auto* item = catalog.find(character.inventory.values[j].definitionHash);
             if (!item || item->kind != GearKind::subclass) continue;
@@ -110,8 +117,14 @@ bool ability_rows_published(std::span<const Need> needs,
 /** Builds the subclass ability combinations every character in the account needs. */
 bool ability_rows(const AccountState& account, const Catalog& catalog,
     std::span<build_data::abilities::Definition> rows, std::size_t& count) {
-    // Keep the prebuilt combinations available after saving any character's loadout.
+    // Dawn's own rows for the stock subclasses are kept, and on top of them only the rows the account
+    // needs now. Rows were once only ever added, and the build cache keeps them from one session to
+    // the next, so every custom subclass and every pick ever tried stayed until the table was full.
     if (!build_data::abilities::snapshot(rows, count)) return false;
+    count = static_cast<std::size_t>(std::remove_if(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(count),
+        [](const build_data::abilities::Definition& row) {
+            return std::find(kStockSubclassLists.begin(), kStockSubclassLists.end(), row.socketEntryListIndex) == kStockSubclassLists.end();
+        }) - rows.begin());
     const std::size_t published = count;
     std::vector<Need> needs;
     if (!needed(account, catalog, needs)) return false;
