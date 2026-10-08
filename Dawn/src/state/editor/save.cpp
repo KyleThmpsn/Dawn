@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <Windows.h>
 #include "edit.h"
+#include "ability_rows.h"
 #include "../runtime/runtime.h"
 #include "../runtime/storage/internal.h"
 #include "../build_data/abilities/ability_bucket_catalog.h"
@@ -56,7 +57,8 @@ bool add_unique(std::span<build_data::abilities::Definition> rows, std::size_t& 
 
 /** One subclass combination a character needs a row for. */
 struct Need {
-    const CatalogItem* item{};
+    /** The subclass's socket entry list, which keys its rows. */
+    std::uint16_t list{};
     Selection_t selection{};
     /** The equipped subclass's row is required; a stowed one's is only built when it can be. */
     bool equipped{};
@@ -73,28 +75,32 @@ std::vector<std::pair<std::uint16_t, Selection_t>> g_unbuildable;
  * subclass it has stowed under the same picks. The game equips a stowed subclass without changing
  * the picks and draws the character from that subclass's row at once, so a row missing then ends
  * the session.
- * @return False when an equipped subclass is missing from the catalog.
+ * @param catalog The editor's catalog, which names the stowed subclasses, or null to list only the
+ * equipped ones, as an equip made in game does: it runs where the catalog may not be loaded.
+ * @return False when an equipped subclass is missing from the build.
  */
-bool needed(const AccountState& account, const Catalog& catalog, std::vector<Need>& output) {
+bool needed(const AccountState& account, const Catalog* catalog, std::vector<Need>& output) {
     output.clear();
     // Every equipped row comes before any stowed one, so the stowed ones never take the room an
     // equipped one needs.
     for (std::size_t i = 0; i < account.characterCount; ++i) {
         const CharacterState& character = account.characters[i];
         if (const auto& subclass = character.equipment.slots[kSubclassSlot]) {
-            const auto* item = catalog.find(subclass->definitionHash);
-            if (!item) return false;
-            output.push_back({item, ability_selection(character), true});
+            build_data::items::Definition definition{};
+            build_data::items::details::Definition detail{};
+            if (!build_data::find_item_definition_hash(subclass->definitionHash, definition)
+                || !build_data::find_configured_item_detail(definition.definitionIndex, detail)) return false;
+            output.push_back({detail.socketEntryListIndex, ability_selection(character), true});
         }
     }
-    for (std::size_t i = 0; i < account.characterCount; ++i) {
+    for (std::size_t i = 0; catalog != nullptr && i < account.characterCount; ++i) {
         const CharacterState& character = account.characters[i];
         const Selection_t selection = ability_selection(character);
         for (std::size_t j = 0; j < character.inventory.count; ++j) {
-            const auto* item = catalog.find(character.inventory.values[j].definitionHash);
+            const auto* item = catalog->find(character.inventory.values[j].definitionHash);
             if (!item || item->kind != GearKind::subclass) continue;
             const std::pair<std::uint16_t, Selection_t> key{item->detail.socketEntryListIndex, selection};
-            if (std::find(g_unbuildable.begin(), g_unbuildable.end(), key) == g_unbuildable.end()) output.push_back({item, selection, false});
+            if (std::find(g_unbuildable.begin(), g_unbuildable.end(), key) == g_unbuildable.end()) output.push_back({key.first, selection, false});
         }
     }
     return true;
@@ -108,14 +114,14 @@ bool ability_rows_published(std::span<const Need> needs,
     std::span<build_data::abilities::Definition> rows, std::size_t& count) {
     for (const Need& need : needs) {
         build_data::abilities::Definition row{};
-        if (!build_data::find_ability_buckets(need.item->detail.socketEntryListIndex, need.selection, row)) return false;
+        if (!build_data::find_ability_buckets(need.list, need.selection, row)) return false;
         if (!add_unique(rows, count, row)) return false;
     }
     return true;
 }
 
 /** Builds the subclass ability combinations every character in the account needs. */
-bool ability_rows(const AccountState& account, const Catalog& catalog,
+bool ability_rows(const AccountState& account, const Catalog* catalog,
     std::span<build_data::abilities::Definition> rows, std::size_t& count) {
     // Dawn's own rows for the stock subclasses are kept, and on top of them only the rows the account
     // needs now. Rows were once only ever added, and the build cache keeps them from one session to
@@ -150,7 +156,7 @@ bool ability_rows(const AccountState& account, const Catalog& catalog,
     }
     if (!found) return false;
     for (const Need& need : needs) {
-        const std::uint16_t list = need.item->detail.socketEntryListIndex;
+        const std::uint16_t list = need.list;
         build_data::abilities::Definition row{};
         if (!build_data::find_ability_buckets(list, need.selection, row)) {
             tables::IndexRow index{};
@@ -202,6 +208,21 @@ bool every_character_resolves(const AccountState& account, const Catalog& catalo
 }
 }
 
+bool publish_ability_rows(const AccountState& account) noexcept {
+    try {
+        std::vector<Need> needs;
+        if (!needed(account, nullptr, needs)) return false;
+        // The common equip has its row already, and must not open the package files or rewrite
+        // the published rows.
+        if (std::all_of(needs.begin(), needs.end(), [](const Need& need) {
+                build_data::abilities::Definition row{};
+                return build_data::find_ability_buckets(need.list, need.selection, row);
+            })) return true;
+        std::vector<build_data::abilities::Definition> rows(build_data::abilities::kDefinitionCapacity);
+        std::size_t count{};
+        return ability_rows(account, nullptr, rows, count) && build_data::publish_ability_buckets(std::span(rows).first(count));
+    } catch (...) { return false; }
+}
 bool apply(Draft& draft, const Catalog& catalog, std::string& message, bool& live) {
     live = false;
     if (!draft.dirty) { message = "No changes to apply."; return false; }
@@ -210,7 +231,7 @@ bool apply(Draft& draft, const Catalog& catalog, std::string& message, bool& liv
     if (!every_character_resolves(*prepared, catalog, message)) return false;
     std::vector<build_data::abilities::Definition> abilities(build_data::abilities::kDefinitionCapacity);
     std::size_t abilityCount{};
-    if (!ability_rows(*prepared, catalog, abilities, abilityCount)) {
+    if (!ability_rows(*prepared, &catalog, abilities, abilityCount)) {
         message = "The selected subclass abilities could not be resolved."; return false;
     }
     // A draft the game has moved the account past is refused before anything is written, the restore
