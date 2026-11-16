@@ -342,6 +342,7 @@
     <ClCompile Include="src\client\hooks\network\investment\investment_derived_rebuild.cpp" />
     <ClCompile Include="src\client\hooks\network\investment\investment_family5_rearm.cpp" />
     <ClCompile Include="src\client\hooks\package_trust\package_trust_bypass.cpp" />
+    <ClCompile Include="src\client\hooks\tag_heap\tag_heap_budget.cpp" />
     <ClCompile Include="src\client\hooks\bitmap\bitmap_hook_lifecycle.cpp" />
     <ClCompile Include="src\client\hooks\bitmap\bitmap_ref_guard.cpp" />
     <ClCompile Include="src\client\hooks\external_server\external_server_route.cpp" />
@@ -1415,6 +1416,7 @@
     <ClInclude Include="src\client\hooks\queuez\internal.h" />
     <ClInclude Include="src\client\hooks\queuez\queuez_hook_lifecycle.h" />
     <ClInclude Include="src\client\hooks\package_trust\package_trust_bypass.h" />
+    <ClInclude Include="src\client\hooks\tag_heap\tag_heap_budget.h" />
     <ClInclude Include="src\client\patterns\game\assert_handler\assert_signature_bytes.h" />
     <ClInclude Include="src\client\patterns\game\config_getter\config_getter_signature_bytes.h" />
     <ClInclude Include="src\client\patterns\game\packages\package_key_signature_bytes.h" />

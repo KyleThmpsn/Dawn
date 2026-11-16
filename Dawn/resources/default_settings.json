@@ -59,7 +59,8 @@
     "roster_force_authored": false,
     "seed_authored_sensors": false,
     "hold_spawn": true,
-    "spawn_hold_ms": 30000
+    "spawn_hold_ms": 30000,
+    "tag_heap_mib": 1024
   },
   "server": {
     "bap_port": 30974,
