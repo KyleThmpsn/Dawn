@@ -5,17 +5,17 @@
 #include <cstdint>
 #include <optional>
 
+#include "../item_catalog.h"
+
 namespace dawn::state::build_data::items::details {
 
 /**
  * Installed item definitions used by Collections, character instances, profile stacks, and
- *
- * their native initial plugs. The
- * supported installed build carries 15,424 total item rows, so
- * the next power of two is also a
- * formal upper bound for the deduplicated detail closure.
+ * their native initial plugs. Every installed row is requested, so the deduplicated detail
+ * closure is bounded by the item table itself. Stock carries 15,424 rows and authored packages
+ * add their own, so this takes the whole signed 16-bit native index range.
  */
-inline constexpr std::size_t kDefinitionCapacity = 16384;
+inline constexpr std::size_t kDefinitionCapacity = items::kDefinitionCapacity;
 /** Family item instances have 12 fixed ordinary socket lanes. */
 inline constexpr std::size_t kInitialPlugCapacity = 12;
 /** Native equipment ids run from 0 to 19. */

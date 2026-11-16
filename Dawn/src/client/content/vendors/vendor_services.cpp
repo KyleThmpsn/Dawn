@@ -1,4 +1,5 @@
 #include "vendor_services.h"
+#include "../../../state/build_data/items/item_catalog.h"
 #include "../../../state/build_data/vendors/service_catalog.h"
 #include "../../../state/build_data/runtime.h"
 #include "../../../middleware/content/packages/tables/definition_index_table.h"
@@ -23,7 +24,8 @@ bool build_services(const middleware::content::packages::reader::Source& source,
     for(std::size_t i=0;i<vendors.size();++i) if(!tables::index_row(index,rows,i,vendors[i])) {return false;}
     std::vector<std::byte> items,definition;tables::Array itemRows{};
     if(!reader::read_tag(source,scratch,0x81327CCBU,items,cls)
-        || !tables::find_array_at(items,8,itemRows) || itemRows.count>16384) {return false;}
+        || !tables::find_array_at(items,8,itemRows)
+        || itemRows.count>state::build_data::items::kDefinitionCapacity) {return false;}
     std::vector<domain::Loot> loot;
     std::vector<domain::QuestStep> quests;
     std::vector<domain::ItemFlag> itemFlags;

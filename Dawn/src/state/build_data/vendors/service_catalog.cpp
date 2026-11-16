@@ -1,4 +1,5 @@
 #include "service_catalog.h"
+#include "../items/item_catalog.h"
 #include "../table.h"
 #include "../../../middleware/content/packages/tables/definition_index_table.h"
 #include <cstring>
@@ -81,18 +82,18 @@ bool publish(std::vector<Blob>&& candidate,std::vector<Loot> rewards,std::vector
         }
     }
     for(std::size_t i=0;i<rewards.size();++i) {
-        if(rewards[i].item>=16384 || std::none_of(candidate.begin(),candidate.end(),[&](const Blob& b){return b.index==rewards[i].vendor;})) {return false;}
+        if(rewards[i].item>=items::kDefinitionCapacity || std::none_of(candidate.begin(),candidate.end(),[&](const Blob& b){return b.index==rewards[i].vendor;})) {return false;}
         for(std::size_t j=0;j<i;++j) if(rewards[j].item==rewards[i].item) {return false;}
     }
     std::sort(steps.begin(),steps.end(),[](auto a,auto b){return a.item<b.item;});
     for(std::size_t i=0;i<steps.size();++i) {
-        if(steps[i].item>=16384 || steps[i].slot>=valueBindings.size()
+        if(steps[i].item>=items::kDefinitionCapacity || steps[i].slot>=valueBindings.size()
             || (i && steps[i].item==steps[i-1].item
                 && (steps[i].slot!=steps[i-1].slot || steps[i].value!=steps[i-1].value
                     || steps[i].ordinal!=steps[i-1].ordinal))) {return false;}
     }
     steps.erase(std::unique(steps.begin(),steps.end(),[](auto a,auto b){return a.item==b.item;}),steps.end());
-    for(const auto f:supplied) if(f.item>=16384 || f.slot>=flagBindings.size()) {return false;}
+    for(const auto f:supplied) if(f.item>=items::kDefinitionCapacity || f.slot>=flagBindings.size()) {return false;}
     std::sort(supplied.begin(),supplied.end(),[](auto a,auto b){return a.item<b.item || (a.item==b.item && a.slot<b.slot);});
     std::vector<Objective> parsed;
     if(!objectiveBytes.empty()) {
@@ -109,7 +110,7 @@ bool publish(std::vector<Blob>&& candidate,std::vector<Loot> rewards,std::vector
     }
     std::sort(progress.begin(),progress.end(),[](const auto& a,const auto& b){return a.item<b.item;});
     for(std::size_t i=0;i<progress.size();++i) {
-        if(progress[i].item>=16384 || (i && progress[i-1].item==progress[i].item)) {return false;}
+        if(progress[i].item>=items::kDefinitionCapacity || (i && progress[i-1].item==progress[i].item)) {return false;}
         for(const auto index:progress[i].objectives) if(index>=parsed.size()) {return false;}
     }
     std::vector<std::uint16_t> handIns;
